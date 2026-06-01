@@ -198,7 +198,7 @@ const ESTADOS = [
   { key:"armado",      label:"Armado",      color:"#00C896" },
 ];
 const PASOS    = ESTADOS.map(e=>e.key);
-const TECNICOS = ["Carlos M.","Roberto L.","Andrés P.","Miguel T.","Jorge R."];
+// CAMBIO 1: ya no se precargan nombres de técnicos. El campo "Técnico" es de texto libre (ver renderNuevaOrden).
 const SERVICIOS= ["Mecánica General","Hojalatería","Pintura","Frenos","Motor","Suspensión","Eléctrico","A/C"];
 const TIPOS_DOC= [
   {key:"inventario", label:"Inventario",           icon:"📦"},
@@ -222,6 +222,19 @@ const DIAS_TERM = 365;
 const hoy   = () => new Date().toISOString().split("T")[0];
 const dDias = f => Math.max(0, Math.floor((Date.now()-new Date(f).getTime())/86400000));
 const cDias = f => { if(!f)return 0; const d=new Date(f); if(isNaN(d))return 0; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); };
+
+// CAMBIO 2: cálculo correcto de "Días en taller".
+// Cuenta desde el reingreso (o primer ingreso) hasta la entrega real (o promesa) si existe;
+// si aún no hay fecha de entrega, cuenta hasta hoy.
+const diasEnTaller = o => {
+  const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
+  if (!ini) return 0;
+  const d1 = new Date(ini); if (isNaN(d1)) return 0;
+  const finStr = (o && (o.fechaEntregaReal || o.fechaPromesaEntrega)) || "";
+  const d2 = finStr ? new Date(finStr) : new Date();
+  if (isNaN(d2)) return cDias(ini);
+  return Math.max(0, Math.floor((d2.getTime() - d1.getTime()) / 86400000));
+};
 
 const EXTRA = () => ({
   fechaPrimerIngreso:"", fechaProgramacion:"", fechaReingreso:"",
@@ -447,7 +460,7 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
       </div>
       <div style={{padding:"0.85rem 1.25rem",borderTop:"0.5px solid "+BRAND.border}}>
         <div style={{fontSize:10,color:BRAND.muted}}>REPAIRX 2026</div>
-        <div style={{fontSize:9,color:BRAND.dimmed,marginTop:2}}>v1.0</div>
+        <div style={{fontSize:9,color:BRAND.dimmed,marginTop:2}}>v1.1</div>
       </div>
     </div>
   );
@@ -572,7 +585,7 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
           <SecFicha title="Fechas">
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>{[{k:"fechaPrimerIngreso",l:"Primer ingreso"},{k:"fechaProgramacion",l:"Programación"},{k:"fechaReingreso",l:"Reingreso"},{k:"fechaInicioReparacion",l:"Inicio reparación"},{k:"fechaPromesaEntrega",l:"Promesa entrega"},{k:"fechaEntregaReal",l:"Entrega real"},{k:"refaccionesCompletas",l:"Refacciones completas"}].map(({k,l})=><div key={k}><label style={S.label}>{l}</label><CampoFecha value={d[k]} onChange={v=>set(k,v)} /></div>)}</div>
-            <div style={{background:BRAND.card2,borderRadius:8,padding:"8px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:22,color:BRAND.accent}}>{cDias(d.fechaPrimerIngreso)}</span></div>
+            <div style={{background:BRAND.card2,borderRadius:8,padding:"8px 10px",display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:22,color:BRAND.accent}}>{diasEnTaller(d)}</span></div>
           </SecFicha>
           <SecFicha title="Perfiles y Financiero">
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -601,7 +614,7 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
         </div>
       ):(
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <SecFicha title="Fechas"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Primer ingreso" v={fld(o.fechaPrimerIngreso)} /><RowFicha l="Programación" v={fld(o.fechaProgramacion)} /><RowFicha l="Reingreso" v={fld(o.fechaReingreso)} /><RowFicha l="Inicio reparación" v={fld(o.fechaInicioReparacion)} /><RowFicha l="Promesa entrega" v={fld(o.fechaPromesaEntrega)} /><RowFicha l="Entrega real" v={fld(o.fechaEntregaReal)} /><RowFicha l="Refacciones compl." v={fld(o.refaccionesCompletas)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:24,color:BRAND.accent}}>{cDias(o.fechaPrimerIngreso)}</span></div></SecFicha>
+          <SecFicha title="Fechas"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Primer ingreso" v={fld(o.fechaPrimerIngreso)} /><RowFicha l="Programación" v={fld(o.fechaProgramacion)} /><RowFicha l="Reingreso" v={fld(o.fechaReingreso)} /><RowFicha l="Inicio reparación" v={fld(o.fechaInicioReparacion)} /><RowFicha l="Promesa entrega" v={fld(o.fechaPromesaEntrega)} /><RowFicha l="Entrega real" v={fld(o.fechaEntregaReal)} /><RowFicha l="Refacciones compl." v={fld(o.refaccionesCompletas)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:24,color:BRAND.accent}}>{diasEnTaller(o)}</span></div></SecFicha>
           <SecFicha title="Perfiles y Financiero"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Perfil mano de obra" v={fld(o.perfilManoObra)} /><RowFicha l="Perfil pintura" v={fld(o.perfilPintura)} /><RowFicha l="Perfil mecánica" v={fld(o.perfilMecanica)} /><RowFicha l="Deducible" v={cur(o.deducible)} /><RowFicha l="Año atención" v={fld(o.anioAtencion)} /><RowFicha l="Mes atención" v={fld(o.mesAtencion)} /><RowFicha l="Día atención" v={fld(o.diaAtencion)} /></div></SecFicha>
           <SecFicha title="Costos"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Mano de obra" v={cur(o.costoManoObra)} /><RowFicha l="Refacciones" v={cur(o.costoRefacciones)} /><RowFicha l="Rep. interna" v={cur(o.montoReparacionInterna)} /><RowFicha l="TOT (proveedor)" v={cur(o.montoTOT)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Total calculado</span><span style={{fontWeight:800,fontSize:20,color:BRAND.green}}>${[o.costoManoObra,o.costoRefacciones,o.montoTOT].reduce((a,v)=>a+(parseFloat(v)||0),0).toLocaleString()}</span></div></SecFicha>
         </div>
@@ -653,7 +666,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
         {puedeEdit&&<div style={{display:"flex"}}>{o.estado!=="armado"?<button style={{...S.btn,flex:1,padding:"9px",fontSize:13}} onClick={()=>avanzarEstado(o.id)}>Avanzar al siguiente paso</button>:<button style={{...S.btnGreen,flex:1,padding:"9px",fontSize:13}} onClick={()=>setModalCobro(o)}>Enviar a cobro</button>}</div>}
       </div>
       <div style={{borderBottom:"0.5px solid "+BRAND.border,background:BRAND.card}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"novedades",l:"💬 Nov"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%3!==2?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%3!==2?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
         <button onClick={()=>setOrdenSel(null)} style={{width:"100%",padding:"7px",fontSize:11,cursor:"pointer",color:BRAND.muted,background:"none",border:"none",borderTop:"0.5px solid "+BRAND.border,textAlign:"center"}}>← Volver a lista</button>
       </div>
       <div style={{padding:"1rem"}}>
@@ -1031,7 +1044,8 @@ export default function App() {
           <div><label style={S.label}>Color</label><input style={S.input} placeholder="Ej. Blanco perla" value={form.color} onChange={e=>setForm({...form,color:e.target.value})} /></div>
           <div><label style={S.label}>Fecha de Entrega</label><input type="date" min={hoy()} style={{...S.input,...be("entrega")}} value={form.entrega} onChange={e=>setForm({...form,entrega:e.target.value})} /><Er f="entrega" /></div>
           <div><label style={S.label}>Servicio *</label><select style={{...S.select,...be("servicio")}} value={form.servicio} onChange={e=>setForm({...form,servicio:e.target.value})}><option value="">Seleccionar...</option>{SERVICIOS.map(sv=><option key={sv}>{sv}</option>)}</select><Er f="servicio" /></div>
-          <div><label style={S.label}>Técnico</label><select style={S.select} value={form.tecnico} onChange={e=>setForm({...form,tecnico:e.target.value})}><option value="">Seleccionar...</option>{TECNICOS.map(t=><option key={t}>{t}</option>)}</select></div>
+          {/* CAMBIO 1: técnico ahora es campo de texto libre (sin nombres precargados) */}
+          <div><label style={S.label}>Técnico</label><input style={S.input} placeholder="Nombre del técnico" value={form.tecnico} onChange={e=>setForm({...form,tecnico:e.target.value})} /></div>
         </div>
         <div style={{marginBottom:10}}><label style={S.label}>Costo Estimado ($)</label><input style={{...S.input,...be("costo")}} type="number" min="0" step="0.01" placeholder="0.00" value={form.costo} onChange={e=>setForm({...form,costo:e.target.value})} /><Er f="costo" /></div>
         <div style={{marginBottom:14}}><label style={S.label}>Notas</label><textarea style={{...S.input,minHeight:60,resize:"vertical"}} placeholder="Describe el problema..." value={form.notas} onChange={e=>setForm({...form,notas:e.target.value})} /></div>
