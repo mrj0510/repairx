@@ -39,7 +39,7 @@ const supaAuth = {
       const data = await r.json();
       if (data.error || data.error_description || data.msg) return { error: data.error_description || data.error || data.msg || "No se pudo registrar" };
       if (data.access_token) return { session: data, user: data.user };
-      return { session: null, user: data.user || data }; // requiere confirmación por correo
+      return { session: null, user: data.user || data };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
   },
   signOut: async (token) => { try { await fetch(SUPA_URL + "/auth/v1/logout", { method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+token } }); } catch (_) {} },
@@ -127,7 +127,6 @@ const generarIdOrden = (...listas) => {
   return "OT-" + String(max+1).padStart(3,"0");
 };
 
-// Mapeo fila de BD (snake_case) → objeto de la app (camelCase)
 const dbToOrden = row => ({
   id:row.id, tallerId:row.taller_id||"", cliente:row.cliente||"", telefono:row.telefono||"", vehiculo:row.vehiculo||"", placa:row.placa||"",
   serie:row.serie||"", siniestro:row.siniestro||"", color:row.color||"", servicio:row.servicio||"", tecnico:row.tecnico||"",
@@ -145,7 +144,6 @@ const dbToOrden = row => ({
   novedades:Array.isArray(row.novedades)?row.novedades:[], bitacora:Array.isArray(row.bitacora)?row.bitacora:[],
 });
 
-// Mapeo objeto de la app → fila de BD
 const ordenToDB = (o, tallerID) => ({
   id:o.id, taller_id:o.tallerId||tallerID, cliente:o.cliente||"", telefono:o.telefono||"", vehiculo:o.vehiculo||"", placa:o.placa||"",
   serie:o.serie||"", siniestro:o.siniestro||"", color:o.color||"", servicio:o.servicio||"", tecnico:o.tecnico||"",
@@ -162,19 +160,16 @@ const ordenToDB = (o, tallerID) => ({
   fotos:o.fotos||[], documentos:o.documentos||[], novedades:o.novedades||[], bitacora:o.bitacora||[],
 });
 
-// Hook: detecta pantallas anchas (escritorio/tablet horizontal)
 function useDesktop(bp=900) {
   const [d, setD] = useState(typeof window!=="undefined" && window.innerWidth>=bp);
   useEffect(() => { const h=()=>setD(window.innerWidth>=bp); window.addEventListener("resize",h); return ()=>window.removeEventListener("resize",h); }, [bp]);
   return d;
 }
 
-// Persistencia de sesión en el navegador (solo el token, nunca la contraseña)
 const SESION_KEY = "repairx_sesion";
 const guardarSesion = u => { try { localStorage.setItem(SESION_KEY, JSON.stringify(u)); } catch(_){} };
 const leerSesion   = () => { try { const s=localStorage.getItem(SESION_KEY); return s?JSON.parse(s):null; } catch(_){ return null; } };
 const borrarSesion = () => { try { localStorage.removeItem(SESION_KEY); } catch(_){} };
-// ─────────────────────────────────────────────────────────────────────────────
 
 const ROLES = {
   admin:    { label:"Administrador", color:"#FF5C35", permisos:["todo"] },
@@ -198,7 +193,7 @@ const ESTADOS = [
   { key:"armado",      label:"Armado",      color:"#00C896" },
 ];
 const PASOS    = ESTADOS.map(e=>e.key);
-// CAMBIO 1: ya no se precargan nombres de técnicos. El campo "Técnico" es de texto libre (ver renderNuevaOrden).
+// CAMBIO 1: ya no se precargan nombres de técnicos. El campo "Técnico" es de texto libre.
 const SERVICIOS= ["Mecánica General","Hojalatería","Pintura","Frenos","Motor","Suspensión","Eléctrico","A/C"];
 const TIPOS_DOC= [
   {key:"inventario", label:"Inventario",           icon:"📦"},
@@ -224,8 +219,6 @@ const dDias = f => Math.max(0, Math.floor((Date.now()-new Date(f).getTime())/864
 const cDias = f => { if(!f)return 0; const d=new Date(f); if(isNaN(d))return 0; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); };
 
 // CAMBIO 2: cálculo correcto de "Días en taller".
-// Cuenta desde el reingreso (o primer ingreso) hasta la entrega real (o promesa) si existe;
-// si aún no hay fecha de entrega, cuenta hasta hoy.
 const diasEnTaller = o => {
   const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
   if (!ini) return 0;
@@ -269,7 +262,7 @@ const mkS = () => ({
 
 // ─── Login / Registro ─────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [modo,setModo]=useState("login"); // login | crear | unir
+  const [modo,setModo]=useState("login");
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
   const [nombre,setNombre]=useState(""); const [tallerNombre,setTallerNombre]=useState(""); const [codigo,setCodigo]=useState("");
   const [logo,setLogo]=useState(null); const logoRef=useRef();
@@ -282,9 +275,29 @@ function LoginScreen({ onLogin }) {
     e.target.value="";
   };
 
+  // CAMBIO 3: completarLogin con reintento robusto para esperar al trigger on_auth_user_created
   const completarLogin = async (session, user) => {
-    let perfil=null; try{ perfil=await supaApi.getPerfil(session.access_token, user.id); }catch(_){}
-    onLogin({ id:user.id, email:user.email, nombre:perfil?.nombre||user.email.split("@")[0], av:(perfil?.nombre||user.email)[0].toUpperCase(), rol:perfil?.rol||"asesor", taller:perfil?.taller||"", tallerNombre:perfil?.taller_nombre||perfil?.taller||"Mi Taller", logo:perfil?.taller_logo||null, token:session.access_token, refreshToken:session.refresh_token, expiresAt:Date.now()+(session.expires_in||3600)*1000, modoDemo:false });
+    let perfil = null;
+    for (let i = 0; i < 3; i++) {
+      try {
+        perfil = await supaApi.getPerfil(session.access_token, user.id);
+        if (perfil?.taller) break; // Si ya tiene taller, salir del loop
+      } catch(_) {}
+      if (i < 2) await new Promise(r => setTimeout(r, 800)); // esperar 800ms antes de reintentar
+    }
+    onLogin({
+      id: user.id, email: user.email,
+      nombre: perfil?.nombre || user.email.split("@")[0],
+      av: (perfil?.nombre || user.email)[0].toUpperCase(),
+      rol: perfil?.rol || "asesor",
+      taller: perfil?.taller || "",
+      tallerNombre: perfil?.taller_nombre || perfil?.taller || "Mi Taller",
+      logo: perfil?.taller_logo || null,
+      token: session.access_token,
+      refreshToken: session.refresh_token,
+      expiresAt: Date.now() + (session.expires_in || 3600) * 1000,
+      modoDemo: false
+    });
   };
 
   const doLogin = async () => {
@@ -330,7 +343,6 @@ function LoginScreen({ onLogin }) {
         <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:6}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
         <div style={{fontSize:12,color:BRAND.muted,letterSpacing:1,textTransform:"uppercase"}}>Gestión inteligente de taller</div>
       </div>
-
       <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
         {!MODO_DEMO&&(
           <div style={{display:"flex",gap:4,marginBottom:18,background:BRAND.bg,borderRadius:10,padding:3}}>
@@ -339,7 +351,6 @@ function LoginScreen({ onLogin }) {
             ))}
           </div>
         )}
-
         <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>{modo==="login"?"Iniciar sesión":modo==="crear"?"Registrar un taller":"Unirme a un taller"}</div>
         <div style={{fontSize:12,color:BRAND.muted,marginBottom:18}}>
           {MODO_DEMO?<span style={{color:"#F59E0B"}}>⚠️ Modo demo — configura Supabase para producción</span>
@@ -347,7 +358,6 @@ function LoginScreen({ onLogin }) {
             :modo==="crear"?"Crea tu taller; serás el administrador"
             :"Pide el código a tu administrador"}
         </div>
-
         {modo==="crear"&&<>
           {lab("Nombre del taller")}
           <input style={iStyle} placeholder="Ej. Taller AutoPro" value={tallerNombre} onChange={e=>setTallerNombre(e.target.value)} onKeyDown={onKey} />
@@ -363,20 +373,16 @@ function LoginScreen({ onLogin }) {
         </>}
         {modo==="unir"&&<>{lab("Código del taller")}<input style={{...iStyle,letterSpacing:2,textTransform:"uppercase",fontFamily:"monospace"}} placeholder="Ej. AUTOPRO-7F3K" value={codigo} onChange={e=>setCodigo(e.target.value.toUpperCase())} onKeyDown={onKey} /></>}
         {(modo==="crear"||modo==="unir")&&<>{lab("Tu nombre")}<input style={iStyle} placeholder="Nombre y apellido" value={nombre} onChange={e=>setNombre(e.target.value)} onKeyDown={onKey} /></>}
-
         {lab("Correo electrónico")}
         <input style={iStyle} type="email" placeholder="tu@taller.com" value={em} onChange={e=>setEm(e.target.value)} onKeyDown={onKey} autoComplete="email" />
         {lab("Contraseña")}
         <input style={{...iStyle,marginBottom:18}} type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} autoComplete={modo==="login"?"current-password":"new-password"} />
-
         {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
         {info&&<div style={{background:BRAND.green+"22",border:"0.5px solid "+BRAND.green+"44",borderRadius:8,padding:"8px 12px",fontSize:12,color:BRAND.green,marginBottom:14}}>{info}</div>}
-
         <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}} onClick={submit} disabled={loading}>
           {loading?"Procesando...":modo==="login"?"Entrar":modo==="crear"?"Crear taller":"Unirme"}
         </button>
       </div>
-
       {MODO_DEMO&&(
         <div style={{marginTop:24,width:"100%",maxWidth:380}}>
           <div style={{fontSize:11,color:BRAND.muted,textAlign:"center",marginBottom:10,textTransform:"uppercase",letterSpacing:0.5}}>Cuentas de demostración</div>
@@ -395,7 +401,6 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ─── Badge usuario ────────────────────────────────────────────────────────────
 function UsuarioBadge({ usuario, onLogout }) {
   const [open, setOpen]=useState(false);
   const rol = ROLES[usuario.rol]||{label:"",color:BRAND.muted,permisos:[]};
@@ -425,7 +430,6 @@ function UsuarioBadge({ usuario, onLogout }) {
   );
 }
 
-// ─── Sidebar (drawer en móvil, fijo en escritorio) ─────────────────────────────
 function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre }) {
   const [open, setOpen] = useState(false);
   const NAV = [
@@ -460,7 +464,7 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
       </div>
       <div style={{padding:"0.85rem 1.25rem",borderTop:"0.5px solid "+BRAND.border}}>
         <div style={{fontSize:10,color:BRAND.muted}}>REPAIRX 2026</div>
-        <div style={{fontSize:9,color:BRAND.dimmed,marginTop:2}}>v1.1</div>
+        <div style={{fontSize:9,color:BRAND.dimmed,marginTop:2}}>v1.2</div>
       </div>
     </div>
   );
@@ -476,7 +480,6 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
   );
 }
 
-// ─── Novedades ────────────────────────────────────────────────────────────────
 function Novedades({ orden, ordenes, setOrdenes, setOrdenSel, S }) {
   const [txt,setTxt]=useState(""); const [cat,setCat]=useState("general"); const [fil,setFil]=useState("todos");
   const botRef=useRef();
@@ -518,7 +521,6 @@ function Novedades({ orden, ordenes, setOrdenes, setOrdenSel, S }) {
   );
 }
 
-// ─── EditarId ─────────────────────────────────────────────────────────────────
 function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin }) {
   const [edit,setEdit]=useState(false); const [val,setVal]=useState(o.id); const ref=useRef();
   const ok=()=>{ const nv=(val.trim()||o.id); if(nv!==o.id&&ordenes.some(x=>x.id===nv)){alert("Ya existe una orden con ese ID.");return;} const upd=ordenes.map(x=>x.id===o.id?{...x,id:nv}:x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===nv)||null); setEdit(false); };
@@ -539,7 +541,6 @@ function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin }) {
   );
 }
 
-// ─── Campo de fecha: texto + botón de calendario ───────────────────────────────
 function CampoFecha({ value, onChange }) {
   const ref = useRef();
   const abrir = () => { const el=ref.current; if(!el)return; try{ el.showPicker(); }catch{ el.focus(); } };
@@ -552,7 +553,6 @@ function CampoFecha({ value, onChange }) {
   );
 }
 
-// ─── Subcomponentes de Ficha (fuera del render para no perder el foco) ──────────
 function RowFicha({ l, v }) {
   return <div style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"0.5px solid "+BRAND.border+"44",fontSize:12}}><span style={{color:BRAND.muted}}>{l}</span><span style={{fontWeight:500}}>{v}</span></div>;
 }
@@ -560,11 +560,9 @@ function SecFicha({ title, children }) {
   return <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}><div style={{fontSize:11,fontWeight:700,color:BRAND.accent,textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>{title}</div>{children}</div>;
 }
 
-// ─── FichaDetalle ─────────────────────────────────────────────────────────────
 function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
   const [editando,setEditando]=useState(false);
   const [d,setD]=useState({});
-  // Cargar datos solo al entrar a edición (no en cada render)
   useEffect(() => {
     if (editando) setD({
       fechaPrimerIngreso:o.fechaPrimerIngreso||"",fechaProgramacion:o.fechaProgramacion||"",fechaReingreso:o.fechaReingreso||"",fechaInicioReparacion:o.fechaInicioReparacion||"",fechaPromesaEntrega:o.fechaPromesaEntrega||"",fechaEntregaReal:o.fechaEntregaReal||"",refaccionesCompletas:o.refaccionesCompletas||"",perfilManoObra:o.perfilManoObra||"",perfilPintura:o.perfilPintura||"",perfilMecanica:o.perfilMecanica||"",clienteEspecial:o.clienteEspecial||false,tipoClienteEspecial:o.tipoClienteEspecial||"",deducible:o.deducible||"",anioAtencion:o.anioAtencion||"",mesAtencion:o.mesAtencion||"",diaAtencion:o.diaAtencion||"",costoManoObra:o.costoManoObra||"",costoRefacciones:o.costoRefacciones||"",montoReparacionInterna:o.montoReparacionInterna||"",montoTOT:o.montoTOT||"",
@@ -623,7 +621,6 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
   );
 }
 
-// ─── ExportarExcel ────────────────────────────────────────────────────────────
 function ExportarExcel({ ordenes, S }) {
   const [taller,setTaller]=useState("Mi Taller"); const [fuente,setFuente]=useState("todas"); const [ok,setOk]=useState(false);
   const pV=v=>{const p=v.trim().split(" ");const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
@@ -650,7 +647,6 @@ function ExportarExcel({ ordenes, S }) {
   );
 }
 
-// ─── OrdenExpandida ───────────────────────────────────────────────────────────
 function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario }) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
@@ -666,6 +662,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
         {puedeEdit&&<div style={{display:"flex"}}>{o.estado!=="armado"?<button style={{...S.btn,flex:1,padding:"9px",fontSize:13}} onClick={()=>avanzarEstado(o.id)}>Avanzar al siguiente paso</button>:<button style={{...S.btnGreen,flex:1,padding:"9px",fontSize:13}} onClick={()=>setModalCobro(o)}>Enviar a cobro</button>}</div>}
       </div>
       <div style={{borderBottom:"0.5px solid "+BRAND.border,background:BRAND.card}}>
+        {/* CAMBIO: etiqueta "💬 Novedades" completa */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%3!==2?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
         <button onClick={()=>setOrdenSel(null)} style={{width:"100%",padding:"7px",fontSize:11,cursor:"pointer",color:BRAND.muted,background:"none",border:"none",borderTop:"0.5px solid "+BRAND.border,textAlign:"center"}}>← Volver a lista</button>
       </div>
@@ -717,7 +714,6 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
   );
 }
 
-// ─── Tarjeta de orden (reutilizable en listas y resultados de búsqueda) ─────────
 function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
   const S=mkS(); const e=ESTADOS.find(x=>x.key===o.estado)||ESTADOS[0]; const idx=PASOS.indexOf(o.estado);
   return (
@@ -740,12 +736,10 @@ export default function App() {
   const [usuario, setUsuario] = useState(null);
   const [iniciando, setIniciando] = useState(true);
 
-  // Al arrancar: recuperar sesión guardada y validarla con Supabase
   useEffect(() => {
     const u = leerSesion();
     if (!u) { setIniciando(false); return; }
     if (u.modoDemo) { setUsuario(u); setIniciando(false); return; }
-    // Refrescar el token por si expiró mientras la app estaba cerrada
     if (u.refreshToken) {
       supaAuth.refreshSession(u.refreshToken).then(({ session, error }) => {
         if (error || !session?.access_token) { borrarSesion(); setIniciando(false); return; }
@@ -755,7 +749,6 @@ export default function App() {
     } else { setUsuario(u); setIniciando(false); }
   }, []);
 
-  // Guardar la sesión cada vez que cambia el usuario
   useEffect(() => { if (usuario) guardarSesion(usuario); }, [usuario]);
 
   useEffect(() => {
@@ -783,8 +776,8 @@ export default function App() {
   const [tabDetalle,setTabDetalle]=useState("info");
   const [filtroEstado,setFiltroEstado]=useState("todos");
   const [busqueda,setBusqueda]=useState("");
-  const [gBusqueda,setGBusqueda]=useState("");          // búsqueda global (header)
-  const [pagina,setPagina]=useState(1);                 // paginación lista activas
+  const [gBusqueda,setGBusqueda]=useState("");
+  const [pagina,setPagina]=useState(1);
   const [fotoAmpliada,setFotoAmpliada]=useState(null);
   const [docTipo,setDocTipo]=useState("inventario");
   const [docNombre,setDocNombre]=useState("");
@@ -798,24 +791,21 @@ export default function App() {
   const [modalCobro,setModalCobro]=useState(null);
   const [modalPago,setModalPago]=useState(null);
   const [modalTerminar,setModalTerminar]=useState(null);
-  const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:"",tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null});
+  // CAMBIO 4: servicio ahora es array para multi-selección
+  const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:[],tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null});
 
   const fotoRef=useRef(); const docRef=useRef(); const fotoPrincipalRef=useRef(); const videoRef=useRef(); const canvasRef=useRef();
 
-  // Resetear paginación cuando cambian filtros/búsqueda
   useEffect(()=>{ setPagina(1); }, [busqueda, filtroEstado, subVista]);
 
-  // Cargar usuarios del taller al entrar a la sección Equipo
   useEffect(() => {
     if (vista!=="equipo" || !usuario || usuario.modoDemo) return;
     supaApi.getUsuariosTaller(usuario.token, usuario.taller).then(d => { if(Array.isArray(d)) setUsuarios(d); }).catch(()=>{});
   }, [vista, usuario]);
 
-  // Snapshot de lo ya sincronizado (para no re-subir lo que no cambió)
   const syncRef = useRef({});
   const cargadoRef = useRef(false);
 
-  // Cargar órdenes desde Supabase al iniciar sesión
   useEffect(() => {
     if (!usuario || usuario.modoDemo) { cargadoRef.current = false; return; }
     setCargando(true);
@@ -839,7 +829,6 @@ export default function App() {
     }).catch(() => setCargando(false));
   }, [usuario]);
 
-  // Guardar en Supabase cualquier orden cuyo contenido haya cambiado (debounce 800ms)
   useEffect(() => {
     if (!usuario || usuario.modoDemo || !cargadoRef.current) return;
     const t = setTimeout(() => {
@@ -851,7 +840,7 @@ export default function App() {
           supaApi.upsertOrden(usuario.token, row)
             .catch(e => {
               console.error("Error al sincronizar orden:", e);
-              delete syncRef.current[o.id]; // permite reintentar en el próximo cambio
+              delete syncRef.current[o.id];
               setErrorSync("No se pudo guardar la orden "+o.id+". Verifica tu conexión; se reintentará al siguiente cambio.");
             });
         }
@@ -867,7 +856,6 @@ export default function App() {
   const totalAct=ordenes.length;
   const totCobro=ordenesCobro.reduce((a,o)=>a+Math.max(0,(o.costo||0)-(o.descuento||0)),0);
   const totCobradas=ordenesCobradas.reduce((a,o)=>a+Math.max(0,(o.costo||0)-(o.descuento||0)),0);
-  // Total cobrado real: toda orden con pago registrado, esté donde esté (incluye terminadas)
   const totCobradoGlobal=[...ordenes,...ordenesCobro,...ordenesCobradas,...ordenesTerminadas,...historial].filter(o=>o.fechaPago).reduce((a,o)=>a+Math.max(0,(o.costo||0)-(o.descuento||0)),0);
   const proxExp=ordenesTerminadas.filter(o=>{const d=dDias(o.fechaTerminado);return d>=DIAS_TERM-30&&d<=DIAS_TERM;});
 
@@ -876,7 +864,6 @@ export default function App() {
   const paginaActual=Math.min(pagina,totalPaginas);
   const activasPagina=ordenesActivas.slice((paginaActual-1)*PAGE_SIZE, paginaActual*PAGE_SIZE);
 
-  // Búsqueda global en todas las colecciones
   const resultadosGlobales=(()=>{
     const q=gBusqueda.trim().toLowerCase(); if(!q)return [];
     const match=o=>[o.id,o.cliente,o.vehiculo,o.placa,o.siniestro,o.serie,o.telefono].some(v=>String(v||"").toLowerCase().includes(q));
@@ -915,18 +902,39 @@ export default function App() {
   const tomarFoto=()=>{const v=videoRef.current,c=canvasRef.current;if(!v||!c)return;c.width=v.videoWidth;c.height=v.videoHeight;c.getContext("2d").drawImage(v,0,0);setForm(f=>({...f,fotoPrincipal:c.toDataURL("image/jpeg",0.75)}));if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());setCamaraActiva(false);};
   const cerrarCamara=()=>{if(videoRef.current?.srcObject)videoRef.current.srcObject.getTracks().forEach(t=>t.stop());setCamaraActiva(false);};
 
-  const crearOrden=()=>{const n={...form,...EXTRA(),fechaPrimerIngreso:hoy(),id:generarIdOrden(ordenes,ordenesCobro,ordenesCobradas,ordenesTerminadas,historial),tallerId:usuario.taller,fecha:hoy(),estado:"presupuesto",costo:parseFloat(form.costo)||0,fotos:[],documentos:[],novedades:[],bitacora:[{accion:"Orden creada",usuario:usuario.nombre,fecha:hoy()}]};setOrdenes(p=>[n,...p]);setForm({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:"",tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null});setCamaraActiva(false);setVista("ordenes");setSubVista("activas");};
+  // CAMBIO 5: crearOrden con validación de taller y conversión de array a string
+  const crearOrden = () => {
+    if (!usuario.taller) {
+      alert("Tu cuenta no tiene un taller asignado. Cierra sesión, vuelve a entrar e intenta de nuevo.");
+      return;
+    }
+    const servicioStr = Array.isArray(form.servicio) ? form.servicio.join(", ") : form.servicio;
+    const n = {
+      ...form,
+      ...EXTRA(),
+      servicio: servicioStr,
+      fechaPrimerIngreso: hoy(),
+      id: generarIdOrden(ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial),
+      tallerId: usuario.taller,
+      fecha: hoy(),
+      estado: "presupuesto",
+      costo: parseFloat(form.costo) || 0,
+      fotos: [], documentos: [], novedades: [],
+      bitacora: [{ accion: "Orden creada", usuario: usuario.nombre, fecha: hoy() }]
+    };
+    setOrdenes(p => [n, ...p]);
+    setForm({ cliente:"", telefono:"", vehiculo:"", placa:"", serie:"", siniestro:"",
+      color:"", servicio:[], tecnico:"", entrega:"", notas:"", costo:"", fotoPrincipal:null });
+    setCamaraActiva(false);
+    setVista("ordenes");
+    setSubVista("activas");
+  };
 
-  // ─── Modales ───
   const ModalTerminar=()=>{if(!modalTerminar)return null;return(<div style={S.overlay} onClick={()=>setModalTerminar(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:16,fontWeight:800,color:BRAND.green,marginBottom:6}}>Terminar Siniestro</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:16}}>{modalTerminar.id} - {modalTerminar.cliente}</div><div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem",marginBottom:16}}>{["Se moverá a la sección Terminadas","Se conservará por 1 año (365 días)","Aviso 30 días antes de expirar"].map((t,i)=><div key={i} style={{fontSize:12,color:BRAND.text,marginBottom:6}}>✓ {t}</div>)}</div><div style={{display:"flex",gap:8}}><button style={{...S.btnGreen,flex:1,padding:"0.65rem",fontSize:14}} onClick={()=>terminarOrden(modalTerminar.id)}>Confirmar terminado</button><button style={S.btnSm()} onClick={()=>setModalTerminar(null)}>Cancelar</button></div></div></div>);};
   const ModalCerrar=()=>{const [m,sm]=useState("");if(!modalCerrar)return null;return(<div style={S.overlay} onClick={()=>setModalCerrar(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.accent,marginBottom:4}}>Cerrar Orden {modalCerrar.id}</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>Se moverá al historial por {DIAS_HIST} días.</div><label style={S.label}>Motivo</label><select style={{...S.select,marginBottom:14}} value={m} onChange={e=>sm(e.target.value)}><option value="">Seleccionar...</option><option>Vehículo entregado al cliente</option><option>Cancelado por el cliente</option><option>Trabajo terminado sin entrega</option><option>Orden duplicada</option><option>Otro</option></select><div style={{display:"flex",gap:8}}><button style={S.btnDanger} disabled={!m} onClick={()=>cerrarOrden(modalCerrar.id,m)}>Confirmar cierre</button><button style={S.btnSm()} onClick={()=>setModalCerrar(null)}>Cancelar</button></div></div></div>);};
   const ModalRetroceder=()=>{const [pin,sp]=useState("");const [mot,sm]=useState("");const [err,se]=useState("");if(!modalRetroceder)return null;const o=modalRetroceder;const i=PASOS.indexOf(o.estado);const ant=i>0?estObj(PASOS[i-1]):null;const esAdmin=puedePerm(usuario,"todo");
     const ok=()=>{ if(!mot){se("Indica el motivo.");return;}
-      if(esAdmin){ // El admin retrocede con su propia autoridad, sin PIN
-        const oo=ordenes.find(x=>x.id===o.id); const ii=PASOS.indexOf(oo.estado);
-        if(ii>0){ updOrden(o.id,{estado:PASOS[ii-1]},{accion:"Retrocedió a: "+estObj(PASOS[ii-1]).label+" - "+mot,usuario:usuario.nombre+" (admin)"}); }
-        setModalRetroceder(null); return;
-      }
+      if(esAdmin){ const oo=ordenes.find(x=>x.id===o.id); const ii=PASOS.indexOf(oo.estado); if(ii>0){ updOrden(o.id,{estado:PASOS[ii-1]},{accion:"Retrocedió a: "+estObj(PASOS[ii-1]).label+" - "+mot,usuario:usuario.nombre+" (admin)"}); } setModalRetroceder(null); return; }
       if(!SUPERVISORES[pin]){se("PIN incorrecto. Pide a un administrador que autorice.");return;}
       if(retrocederEstado(o.id,pin,mot))setModalRetroceder(null);
     };
@@ -937,7 +945,6 @@ export default function App() {
   const ModalCobro=()=>{const [desc,sd]=useState("");const [notas,sn]=useState("");if(!modalCobro)return null;const total=Math.max(0,(modalCobro.costo||0)-(parseFloat(desc)||0));return(<div style={S.overlay} onClick={()=>setModalCobro(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.green,marginBottom:4}}>Enviar a Cobro</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>{modalCobro.id} - {modalCobro.cliente}</div><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:14}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:8}}><span style={{color:BRAND.muted}}>Costo</span><span style={{fontWeight:600}}>${(modalCobro.costo||0).toLocaleString()}</span></div><label style={S.label}>Descuento ($)</label><input style={{...S.input,marginBottom:10}} type="number" placeholder="0" value={desc} onChange={e=>sd(e.target.value)} /><div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700,borderTop:"0.5px solid "+BRAND.border,paddingTop:8}}><span style={{color:BRAND.muted}}>Total</span><span style={{color:BRAND.green}}>${total.toLocaleString()}</span></div></div><label style={S.label}>Notas (opcional)</label><textarea style={{...S.input,minHeight:50,resize:"none",marginBottom:14}} value={notas} onChange={e=>sn(e.target.value)} /><div style={{display:"flex",gap:8}}><button style={S.btnGreen} onClick={()=>enviarACobro(modalCobro.id,desc,notas)}>Confirmar</button><button style={S.btnSm()} onClick={()=>setModalCobro(null)}>Cancelar</button></div></div></div>);};
   const ModalPago=()=>{const [met,sm]=useState("Efectivo");const [ref,sr]=useState("");if(!modalPago)return null;const total=Math.max(0,(modalPago.costo||0)-(modalPago.descuento||0));return(<div style={S.overlay} onClick={()=>setModalPago(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.purple,marginBottom:4}}>Registrar Pago</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>{modalPago.id} - {modalPago.cliente}</div><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:14}}><div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700}}><span style={{color:BRAND.muted}}>Total</span><span style={{color:BRAND.green}}>${total.toLocaleString()}</span></div></div><label style={S.label}>Método de pago</label><select style={{...S.select,marginBottom:10}} value={met} onChange={e=>sm(e.target.value)}>{["Efectivo","Transferencia","Tarjeta débito","Tarjeta crédito","Cheque","Aseguradora"].map(x=><option key={x}>{x}</option>)}</select><label style={S.label}>Referencia (opcional)</label><input style={{...S.input,marginBottom:14}} value={ref} onChange={e=>sr(e.target.value)} /><div style={{display:"flex",gap:8}}><button style={{...S.btn,background:BRAND.purple}} onClick={()=>registrarPago(modalPago.id,met,ref)}>Confirmar pago</button><button style={S.btnSm()} onClick={()=>setModalPago(null)}>Cancelar</button></div></div></div>);};
 
-  // ─── Renders ───
   const renderBusquedaGlobal=()=>(
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -1014,7 +1021,8 @@ export default function App() {
     if(!form.cliente.trim()) err.cliente="Requerido";
     if(!form.vehiculo.trim()) err.vehiculo="Requerido";
     if(!form.placa.trim()) err.placa="Requerido"; else if(!/^[A-Za-z0-9-]{5,10}$/.test(form.placa.trim())) err.placa="5 a 10 caracteres (letras, números o guion)";
-    if(!form.servicio) err.servicio="Requerido";
+    // CAMBIO 6: validación de multi-servicio
+    if(!form.servicio || form.servicio.length===0) err.servicio="Selecciona al menos un servicio";
     if(form.telefono.trim()&&form.telefono.replace(/\D/g,"").length<10) err.telefono="Al menos 10 dígitos";
     if(form.serie.trim()&&form.serie.trim().length!==17) err.serie="El VIN debe tener 17 caracteres";
     if(form.costo!==""&&(isNaN(parseFloat(form.costo))||parseFloat(form.costo)<0)) err.costo="Debe ser un número mayor o igual a 0";
@@ -1022,6 +1030,17 @@ export default function App() {
     const hayErrores=Object.keys(err).length>0;
     const be=f=>err[f]?{border:"0.5px solid #EF4444"}:{};
     const Er=({f})=>err[f]?<div style={{fontSize:10,color:"#EF4444",marginTop:3}}>{err[f]}</div>:null;
+
+    // Toggle de servicio en el array
+    const toggleServicio = sv => {
+      setForm(f => ({
+        ...f,
+        servicio: f.servicio.includes(sv)
+          ? f.servicio.filter(x => x !== sv)
+          : [...f.servicio, sv]
+      }));
+    };
+
     return (
     <div style={{maxWidth:540}}>
       <div style={S.card}>
@@ -1042,10 +1061,27 @@ export default function App() {
           <div style={{gridColumn:"1/-1"}}><label style={S.label}>No. de Serie / VIN</label><input style={{...S.input,fontFamily:"monospace",letterSpacing:2,textTransform:"uppercase",...be("serie")}} placeholder="Ej. 1HGBH41JXMN109186" maxLength={17} value={form.serie} onChange={e=>setForm({...form,serie:e.target.value.toUpperCase()})} /><Er f="serie" /></div>
           <div style={{gridColumn:"1/-1"}}><label style={S.label}>No. de Siniestro (si aplica)</label><input style={S.input} placeholder="Ej. SIN-2026-00123" value={form.siniestro} onChange={e=>setForm({...form,siniestro:e.target.value})} /></div>
           <div><label style={S.label}>Color</label><input style={S.input} placeholder="Ej. Blanco perla" value={form.color} onChange={e=>setForm({...form,color:e.target.value})} /></div>
-          <div><label style={S.label}>Fecha de Entrega</label><input type="date" min={hoy()} style={{...S.input,...be("entrega")}} value={form.entrega} onChange={e=>setForm({...form,entrega:e.target.value})} /><Er f="entrega" /></div>
-          <div><label style={S.label}>Servicio *</label><select style={{...S.select,...be("servicio")}} value={form.servicio} onChange={e=>setForm({...form,servicio:e.target.value})}><option value="">Seleccionar...</option>{SERVICIOS.map(sv=><option key={sv}>{sv}</option>)}</select><Er f="servicio" /></div>
-          {/* CAMBIO 1: técnico ahora es campo de texto libre (sin nombres precargados) */}
-          <div><label style={S.label}>Técnico</label><input style={S.input} placeholder="Nombre del técnico" value={form.tecnico} onChange={e=>setForm({...form,tecnico:e.target.value})} /></div>
+          {/* CAMBIO 7: "Fecha Promesa de Entrega" en lugar de "Fecha de Entrega" */}
+          <div><label style={S.label}>Fecha Promesa de Entrega</label><input type="date" min={hoy()} style={{...S.input,...be("entrega")}} value={form.entrega} onChange={e=>setForm({...form,entrega:e.target.value})} /><Er f="entrega" /></div>
+          {/* CAMBIO 8: Multi-selección de servicios con pills */}
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={S.label}>Servicio * <span style={{color:BRAND.muted,fontWeight:400}}>(puedes elegir varios)</span></label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,padding:"6px 0",border:err.servicio?"0.5px solid #EF4444":"none",borderRadius:err.servicio?8:0,paddingLeft:err.servicio?8:0}}>
+              {SERVICIOS.map(sv => {
+                const sel = Array.isArray(form.servicio) && form.servicio.includes(sv);
+                return (
+                  <button key={sv} type="button" onClick={()=>toggleServicio(sv)}
+                    style={{padding:"7px 14px",borderRadius:20,border:"1.5px solid "+(sel?BRAND.accent:BRAND.border),background:sel?BRAND.accent:"#fff",color:sel?"#fff":BRAND.muted,fontSize:12,fontWeight:sel?700:400,cursor:"pointer",transition:"all 0.15s"}}>
+                    {sv}
+                  </button>
+                );
+              })}
+            </div>
+            {form.servicio.length>0&&<div style={{fontSize:10,color:BRAND.accent,marginTop:4}}>Seleccionado: {form.servicio.join(", ")}</div>}
+            <Er f="servicio" />
+          </div>
+          {/* Técnico: texto libre */}
+          <div style={{gridColumn:"1/-1"}}><label style={S.label}>Técnico</label><input style={S.input} placeholder="Nombre del técnico" value={form.tecnico} onChange={e=>setForm({...form,tecnico:e.target.value})} /></div>
         </div>
         <div style={{marginBottom:10}}><label style={S.label}>Costo Estimado ($)</label><input style={{...S.input,...be("costo")}} type="number" min="0" step="0.01" placeholder="0.00" value={form.costo} onChange={e=>setForm({...form,costo:e.target.value})} /><Er f="costo" /></div>
         <div style={{marginBottom:14}}><label style={S.label}>Notas</label><textarea style={{...S.input,minHeight:60,resize:"vertical"}} placeholder="Describe el problema..." value={form.notas} onChange={e=>setForm({...form,notas:e.target.value})} /></div>
