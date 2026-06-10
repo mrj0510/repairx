@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 
 // ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
-const SUPA_URL  = "https://wnlmzradcwloripcauwi.supabase.co";
-const SUPA_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndubG16cmFkY3dsb3JpcGNhdXdpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5MzMwNjYsImV4cCI6MjA5NTUwOTA2Nn0.zjVG9ybyt4wx8FYoH1dekJowITsl6NB3gRH4xH5IY14";
-const MODO_DEMO = SUPA_URL.includes("TU_PROJECT_ID");
+const SUPA_URL  = import.meta.env.VITE_SUPABASE_URL;
+const SUPA_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const MODO_DEMO = !SUPA_URL || SUPA_URL.includes("TU_PROJECT_ID");
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BRAND = {
