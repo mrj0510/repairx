@@ -87,7 +87,7 @@ const supaApi = {
 
 // ─── STORAGE + UTILIDADES ─────────────────────────────────────────────────────
 const BUCKET_FOTOS = "fotos";
-const MAX_ARCHIVO_MB = 10;
+const MAX_ARCHIVO_MB = 20;
 const PAGE_SIZE = 8;
 
 const supaStorage = {
@@ -103,23 +103,104 @@ const supaStorage = {
   },
 };
 
-const comprimirImagen = (file, maxAncho=1280, calidad=0.7) => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      const escala = Math.min(1, maxAncho / img.width);
-      const c = document.createElement("canvas");
-      c.width = Math.round(img.width*escala); c.height = Math.round(img.height*escala);
-      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      c.toBlob(blob => { if(!blob){reject(new Error("No se pudo comprimir la imagen."));return;} resolve({ blob, dataUrl:c.toDataURL("image/jpeg",calidad) }); }, "image/jpeg", calidad);
-    };
-    img.onerror = () => reject(new Error("El archivo no es una imagen válida."));
-    img.src = e.target.result;
-  };
-  reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
-  reader.readAsDataURL(file);
+// ═══════════════════════════════════════════════════════════════════════════
+// PIPELINE UNIVERSAL DE IMÁGENES
+// Recibe cualquier formato (incluido HEIC de iPhone) y siempre devuelve un
+// JPEG comprimido a un objetivo de peso. Un solo punto de entrada para toda
+// la app: fotos de orden, foto principal, logo y documentos-imagen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Presets: lado mayor en px + peso objetivo en KB
+const PRESET_IMG = {
+  foto:    { maxLado: 1920, objetivoKB: 350 },  // fotos del vehículo (ver daños)
+  portada: { maxLado:  900, objetivoKB: 120 },  // foto principal de la orden
+  logo:    { maxLado:  240, objetivoKB:  30 },  // logo del taller
+  doc:     { maxLado: 1600, objetivoKB: 300 },  // documentos escaneados
+};
+const CALIDAD_INICIAL = 0.85;
+const CALIDAD_MINIMA  = 0.45;   // por debajo de esto la foto ya no sirve para peritaje
+
+const obtenerExtension = (nombre) => {
+  const m = /\.([a-zA-Z0-9]+)$/.exec(nombre || "");
+  return m ? m[1].toLowerCase() : "";
+};
+
+const EXTS_HEIC   = ["heic","heif"];
+const EXTS_IMAGEN = ["jpg","jpeg","png","webp","gif","bmp","avif","tif","tiff","heic","heif"];
+
+// Windows manda MIME vacío en HEIC → hay que revisar también la extensión
+const esHEIC = (f) => {
+  if (f.type === "image/heic" || f.type === "image/heif") return true;
+  return EXTS_HEIC.includes(obtenerExtension(f.name));
+};
+
+const pareceImagen = (f) => {
+  if (f.type && f.type.startsWith("image/")) return true;
+  return EXTS_IMAGEN.includes(obtenerExtension(f.name));
+};
+
+// Windows no lista archivos .heic bajo "image/*": hay que nombrarlos aparte
+const ACCEPT_IMG = "image/*,.heic,.heif";
+
+const nombreJpg = (nombre) => String(nombre || "foto").replace(/\.[^.]+$/, "") + ".jpg";
+
+// Convierte HEIC/HEIF a JPEG. La librería se descarga SOLO cuando hay un HEIC
+// (import dinámico → Vite la separa en su propio chunk, no engorda el bundle).
+const convertirHEIC = async (file) => {
+  let heic2any;
+  try {
+    heic2any = (await import("heic2any")).default;
+  } catch {
+    throw new Error("No se pudo cargar el conversor HEIC. Revisa tu conexión e inténtalo de nuevo.");
+  }
+  const salida = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 });
+  const blob = Array.isArray(salida) ? salida[0] : salida;
+  return new File([blob], nombreJpg(file.name), { type: "image/jpeg" });
+};
+
+// Carga un archivo en un <img> listo para dibujar en canvas
+const cargarEnImagen = (file) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("El navegador no pudo decodificar este archivo.")); };
+  img.src = url;
 });
+
+// Redimensiona y baja la calidad por pasos hasta alcanzar el objetivo de KB
+const comprimirAObjetivo = async (img, maxLado, objetivoKB) => {
+  const ladoMayor = Math.max(img.width, img.height) || 1;
+  const escala = Math.min(1, maxLado / ladoMayor);
+  const c = document.createElement("canvas");
+  c.width  = Math.max(1, Math.round(img.width  * escala));
+  c.height = Math.max(1, Math.round(img.height * escala));
+  const ctx = c.getContext("2d");
+  // Fondo blanco: sin esto, los PNG/WebP con transparencia salen con fondo negro en JPEG
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+
+  const aBlob = (q) => new Promise(res => c.toBlob(res, "image/jpeg", q));
+
+  let calidad = CALIDAD_INICIAL;
+  let blob = await aBlob(calidad);
+  while (blob && blob.size > objetivoKB * 1024 && calidad > CALIDAD_MINIMA) {
+    calidad = Math.max(CALIDAD_MINIMA, Math.round((calidad - 0.1) * 100) / 100);
+    blob = await aBlob(calidad);
+  }
+  if (!blob) throw new Error("No se pudo comprimir la imagen.");
+  return { blob, dataUrl: c.toDataURL("image/jpeg", calidad), calidad, ancho: c.width, alto: c.height };
+};
+
+// ── Punto de entrada único ──
+// procesarImagen(archivo, "foto" | "portada" | "logo" | "doc") → { blob, dataUrl, ... }
+const procesarImagen = async (file, preset = "foto") => {
+  const cfg = PRESET_IMG[preset] || PRESET_IMG.foto;
+  const fuente = esHEIC(file) ? await convertirHEIC(file) : file;
+  const img = await cargarEnImagen(fuente);
+  return comprimirAObjetivo(img, cfg.maxLado, cfg.objetivoKB);
+};
+// ═══════════════════════════════════════════════════════════════════════════
 
 const generarIdOrden = (...listas) => {
   let max = 0;
@@ -271,7 +352,7 @@ function LoginScreen({ onLogin }) {
   const onLogo = async e => {
     const f=e.target.files[0]; if(!f){return;}
     if(!f.type.startsWith("image/")){ setErr("El logo debe ser una imagen."); e.target.value=""; return; }
-    try{ const { dataUrl }=await comprimirImagen(f,200,0.6); setLogo(dataUrl); setErr(""); }catch{ setErr("No se pudo procesar el logo."); }
+    try{ const { dataUrl }=await procesarImagen(f,"logo"); setLogo(dataUrl); setErr(""); }catch(ex){ setErr("No se pudo procesar el logo: "+ex.message); }
     e.target.value="";
   };
 
@@ -368,7 +449,7 @@ function LoginScreen({ onLogin }) {
               <button type="button" onClick={()=>logoRef.current?.click()} style={{background:BRAND.accent,color:"#fff",border:"none",borderRadius:9,padding:"0.5rem 0.9rem",fontSize:12,fontWeight:600,cursor:"pointer"}}>Subir logo</button>
               {logo&&<button type="button" onClick={()=>setLogo(null)} style={{background:BRAND.dimmed,color:BRAND.text,border:"none",borderRadius:9,padding:"0.5rem 0.9rem",fontSize:12,cursor:"pointer"}}>Quitar</button>}
             </div>
-            <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={onLogo} />
+            <input ref={logoRef} type="file" accept={ACCEPT_IMG} style={{display:"none"}} onChange={onLogo} />
           </div>
         </>}
         {modo==="unir"&&<>{lab("Código del taller")}<input style={{...iStyle,letterSpacing:2,textTransform:"uppercase",fontFamily:"monospace"}} placeholder="Ej. AUTOPRO-7F3K" value={codigo} onChange={e=>setCodigo(e.target.value.toUpperCase())} onKeyDown={onKey} /></>}
@@ -686,7 +767,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
         {tabDetalle==="fotos"&&(
           <div>
             <div style={{border:"1.5px dashed "+BRAND.border,borderRadius:10,padding:"0.85rem",textAlign:"center",cursor:"pointer",background:BRAND.bg,marginBottom:12}} onClick={()=>fotoRef.current?.click()}><div style={{fontSize:12,color:BRAND.muted}}>📷 Subir fotos del vehículo</div></div>
-            <input ref={fotoRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={ev=>agregarFotos(ev.target.files)} />
+            <input ref={fotoRef} type="file" accept={ACCEPT_IMG} multiple style={{display:"none"}} onChange={ev=>agregarFotos(ev.target.files)} />
             {(!o.fotos||o.fotos.length===0)&&<div style={{color:BRAND.muted,fontSize:13,textAlign:"center",padding:"1.5rem 0"}}>Sin fotos aún</div>}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:8}}>{(o.fotos||[]).map(f=><div key={f.id} style={{position:"relative",aspectRatio:"4/3",borderRadius:8,overflow:"hidden",border:"0.5px solid "+BRAND.border}}><img src={f.url} alt={f.nombre} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}} onClick={()=>setFotoAmpliada(f)} /><button onClick={()=>eliminarFoto(f.id)} style={{position:"absolute",top:4,right:4,background:"#000a",border:"none",color:"#fff",borderRadius:"50%",width:20,height:20,cursor:"pointer",fontSize:11,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button></div>)}</div>
           </div>
@@ -698,7 +779,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
               <label style={S.label}>Tipo</label><select style={{...S.select,marginBottom:8,fontSize:12}} value={docTipo} onChange={e=>setDocTipo(e.target.value)}>{TIPOS_DOC.map(t=><option key={t.key} value={t.key}>{t.label}</option>)}</select>
               <label style={S.label}>Nombre (opcional)</label><input style={{...S.input,marginBottom:10,fontSize:12}} placeholder="Ej. Valuación Zurich" value={docNombre} onChange={e=>setDocNombre(e.target.value)} />
               <button style={{...S.btn,width:"100%",fontSize:12}} onClick={()=>docRef.current?.click()}>📎 Seleccionar archivo</button>
-              <input ref={docRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.png" style={{display:"none"}} onChange={ev=>{if(ev.target.files.length)agregarDoc(ev.target.files);ev.target.value="";}} />
+              <input ref={docRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.webp,.heic,.heif" style={{display:"none"}} onChange={ev=>{if(ev.target.files.length)agregarDoc(ev.target.files);ev.target.value="";}} />
             </div>
             <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
               <div style={{fontSize:12,fontWeight:600,color:BRAND.muted,marginBottom:10}}>Documentos adjuntos {(o.documentos||[]).length>0&&<span style={{background:BRAND.card2,borderRadius:10,padding:"1px 8px",fontSize:11,color:BRAND.accent}}>{o.documentos.length}</span>}</div>
@@ -887,14 +968,73 @@ export default function App() {
   const cerrarOrden=(id,motivo)=>{const o=ordenes.find(x=>x.id===id);if(!o)return;setHistorial(p=>[{...o,fechaCierre:hoy(),motivoCierre:motivo,bitacora:[...(o.bitacora||[]),{accion:"Cerrada: "+motivo,usuario:usuario.nombre,fecha:hoy()}]},...p]);setOrdenes(p=>p.filter(x=>x.id!==id));setOrdenSel(null);setModalCerrar(null);};
   const terminarOrden=id=>{const src=ordenesCobradas.find(x=>x.id===id)||ordenesCobro.find(x=>x.id===id)||ordenes.find(x=>x.id===id);if(!src)return;const t={...src,fechaTerminado:hoy(),bitacora:[...(src.bitacora||[]),{accion:"Siniestro terminado",usuario:usuario.nombre,fecha:hoy()}]};setOrdenesTerminadas(p=>[t,...p]);setOrdenesCobradas(p=>p.filter(x=>x.id!==id));setOrdenesCobro(p=>p.filter(x=>x.id!==id));setOrdenes(p=>p.filter(x=>x.id!==id));setOrdenSel(null);setModalTerminar(null);setVista("terminadas");};
 
-  const agregarFotos=async files=>{
-    if(!ordenSel||!files.length)return; setSubiendo("Procesando fotos...");
-    try{ for(const f of Array.from(files)){ if(!f.type.startsWith("image/")){alert(`«${f.name}» no es una imagen.`);continue;} if(f.size>MAX_ARCHIVO_MB*1024*1024){alert(`«${f.name}» supera el límite de ${MAX_ARCHIVO_MB} MB.`);continue;} const {blob,dataUrl}=await comprimirImagen(f); let url=dataUrl; if(!usuario.modoDemo){setSubiendo(`Subiendo ${f.name}...`);url=await supaStorage.subirImagen(usuario.token,usuario.taller,ordenSel.id,blob,f.name);} const foto={id:Date.now()+Math.random(),nombre:f.name,fecha:hoy(),url,size:(blob.size/1024).toFixed(0)+" KB"}; setOrdenes(p=>{const u=p.map(o=>o.id===ordenSel.id?{...o,fotos:[...(o.fotos||[]),foto]}:o);setOrdenSel(u.find(o=>o.id===ordenSel.id));return u;}); } }catch(e){alert("Error al procesar la foto: "+e.message);}finally{setSubiendo("");}
+  // Acepta cualquier formato de imagen (incluido HEIC) y siempre sube JPEG comprimido
+  const agregarFotos = async files => {
+    if (!ordenSel || !files.length) return;
+    const lista = Array.from(files);
+    const fallidas = [];
+    try {
+      for (let i = 0; i < lista.length; i++) {
+        const f = lista[i];
+        const cuenta = lista.length > 1 ? ` (${i + 1}/${lista.length})` : "";
+
+        if (!pareceImagen(f)) { fallidas.push(`${f.name}: no es un archivo de imagen`); continue; }
+        if (f.size > MAX_ARCHIVO_MB * 1024 * 1024) { fallidas.push(`${f.name}: supera ${MAX_ARCHIVO_MB} MB`); continue; }
+
+        try {
+          setSubiendo(esHEIC(f) ? `Convirtiendo HEIC${cuenta}...` : `Comprimiendo imagen${cuenta}...`);
+          const { blob, dataUrl } = await procesarImagen(f, "foto");
+
+          let url = dataUrl;
+          if (!usuario.modoDemo) {
+            setSubiendo(`Subiendo${cuenta}...`);
+            url = await supaStorage.subirImagen(usuario.token, usuario.taller, ordenSel.id, blob, nombreJpg(f.name));
+          }
+          const foto = {
+            id: Date.now() + Math.random(),
+            nombre: nombreJpg(f.name),
+            fecha: hoy(),
+            url,
+            size: (blob.size / 1024).toFixed(0) + " KB"
+          };
+          setOrdenes(p => {
+            const u = p.map(o => o.id === ordenSel.id ? { ...o, fotos: [...(o.fotos || []), foto] } : o);
+            setOrdenSel(u.find(o => o.id === ordenSel.id));
+            return u;
+          });
+        } catch (e) {
+          // Una foto que falla no debe abortar el resto del lote
+          fallidas.push(`${f.name}: ${e.message}`);
+        }
+      }
+    } finally {
+      setSubiendo("");
+      if (fallidas.length) alert("No se pudieron procesar estas imágenes:\n\n" + fallidas.join("\n"));
+    }
   };
+
   const eliminarFoto=fid=>{ if(!confirm("¿Eliminar esta foto? Esta acción no se puede deshacer."))return; const u=ordenes.map(o=>o.id===ordenSel.id?{...o,fotos:o.fotos.filter(f=>f.id!==fid)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); };
   const agregarDoc=async files=>{
     if(!ordenSel||!files.length)return; const f=files[0]; if(f.size>MAX_ARCHIVO_MB*1024*1024){alert(`«${f.name}» supera el límite de ${MAX_ARCHIVO_MB} MB.`);return;} const ext=f.name.split(".").pop().toUpperCase(); setSubiendo("Procesando documento...");
-    try{ let url; if(!usuario.modoDemo&&f.type.startsWith("image/")){const {blob}=await comprimirImagen(f,1600,0.75);setSubiendo(`Subiendo ${f.name}...`);url=await supaStorage.subirImagen(usuario.token,usuario.taller,ordenSel.id,blob,f.name);}else{url=await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=()=>rej(new Error("lectura"));r.readAsDataURL(f);});} const doc={id:Date.now()+Math.random(),tipo:docTipo,nombre:docNombre||f.name,archivo:f.name,ext,fecha:hoy(),size:(f.size/1024).toFixed(0)+" KB",url}; setOrdenes(p=>{const u=p.map(o=>o.id===ordenSel.id?{...o,documentos:[...(o.documentos||[]),doc]}:o);setOrdenSel(u.find(o=>o.id===ordenSel.id));return u;}); setDocNombre(""); }catch(e){alert("Error al adjuntar el documento: "+e.message);}finally{setSubiendo("");}
+    try{
+      let url, tamKB = (f.size/1024).toFixed(0), extFinal = ext, nombreArchivo = f.name;
+      if (pareceImagen(f)) {
+        // Documento-imagen: se convierte a JPEG comprimido igual que las fotos
+        setSubiendo(esHEIC(f) ? "Convirtiendo HEIC..." : "Comprimiendo documento...");
+        const { blob, dataUrl } = await procesarImagen(f, "doc");
+        tamKB = (blob.size/1024).toFixed(0);
+        extFinal = "JPG";
+        nombreArchivo = nombreJpg(f.name);
+        if (!usuario.modoDemo) { setSubiendo(`Subiendo ${nombreArchivo}...`); url = await supaStorage.subirImagen(usuario.token,usuario.taller,ordenSel.id,blob,nombreArchivo); }
+        else url = dataUrl;
+      } else {
+        // PDF, Word, Excel, etc.: se guardan tal cual
+        url = await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=()=>rej(new Error("No se pudo leer el archivo."));r.readAsDataURL(f);});
+      }
+      const doc={id:Date.now()+Math.random(),tipo:docTipo,nombre:docNombre||nombreArchivo,archivo:nombreArchivo,ext:extFinal,fecha:hoy(),size:tamKB+" KB",url};
+      setOrdenes(p=>{const u=p.map(o=>o.id===ordenSel.id?{...o,documentos:[...(o.documentos||[]),doc]}:o);setOrdenSel(u.find(o=>o.id===ordenSel.id));return u;});
+      setDocNombre("");
+    }catch(e){alert("Error al adjuntar el documento: "+e.message);}finally{setSubiendo("");}
   };
   const eliminarDoc=did=>{ if(!confirm("¿Eliminar este documento? Esta acción no se puede deshacer."))return; const u=ordenes.map(o=>o.id===ordenSel.id?{...o,documentos:o.documentos.filter(d=>d.id!==did)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); };
 
@@ -1050,7 +1190,7 @@ export default function App() {
           <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
             <div style={{width:110,height:80,borderRadius:10,overflow:"hidden",border:"0.5px solid "+BRAND.border,background:BRAND.bg,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>{camaraActiva?<video ref={videoRef} style={{width:"100%",height:"100%",objectFit:"cover"}} autoPlay playsInline muted />:form.fotoPrincipal?<img src={form.fotoPrincipal} alt="preview" style={{width:"100%",height:"100%",objectFit:"cover"}} />:<span style={{fontSize:28}}>🚗</span>}</div>
             <canvas ref={canvasRef} style={{display:"none"}} />
-            <div style={{display:"flex",flexDirection:"column",gap:6,flex:1}}>{camaraActiva?(<><button style={{...S.btn,fontSize:12}} onClick={tomarFoto}>📸 Tomar foto</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={cerrarCamara}>Cancelar</button></>):(<><button style={{...S.btn,fontSize:12}} onClick={abrirCamara}>📷 Usar cámara</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={()=>fotoPrincipalRef.current?.click()}>🖼️ Subir foto</button>{form.fotoPrincipal&&<button style={{...S.btnSm(),fontSize:11,color:"#fca5a5"}} onClick={()=>setForm(f=>({...f,fotoPrincipal:null}))}>✕ Quitar</button>}</>)}<input ref={fotoPrincipalRef} type="file" accept="image/*" style={{display:"none"}} onChange={async ev=>{const f=ev.target.files[0];if(!f)return;try{const {dataUrl}=await comprimirImagen(f,800,0.7);setForm(p=>({...p,fotoPrincipal:dataUrl}));}catch{alert("No se pudo procesar la imagen.");}ev.target.value="";}} /></div>
+            <div style={{display:"flex",flexDirection:"column",gap:6,flex:1}}>{camaraActiva?(<><button style={{...S.btn,fontSize:12}} onClick={tomarFoto}>📸 Tomar foto</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={cerrarCamara}>Cancelar</button></>):(<><button style={{...S.btn,fontSize:12}} onClick={abrirCamara}>📷 Usar cámara</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={()=>fotoPrincipalRef.current?.click()}>🖼️ Subir foto</button>{form.fotoPrincipal&&<button style={{...S.btnSm(),fontSize:11,color:"#fca5a5"}} onClick={()=>setForm(f=>({...f,fotoPrincipal:null}))}>✕ Quitar</button>}</>)}<input ref={fotoPrincipalRef} type="file" accept={ACCEPT_IMG} style={{display:"none"}} onChange={async ev=>{const f=ev.target.files[0];if(!f)return;if(!pareceImagen(f)){alert("Ese archivo no es una imagen.");ev.target.value="";return;}try{setSubiendo(esHEIC(f)?"Convirtiendo HEIC...":"Procesando imagen...");const {dataUrl}=await procesarImagen(f,"portada");setForm(p=>({...p,fotoPrincipal:dataUrl}));}catch(ex){alert("No se pudo procesar la imagen: "+ex.message);}finally{setSubiendo("");}ev.target.value="";}} /></div>
           </div>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
