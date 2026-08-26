@@ -144,18 +144,73 @@ const ACCEPT_IMG = "image/*,.heic,.heif";
 
 const nombreJpg = (nombre) => String(nombre || "foto").replace(/\.[^.]+$/, "") + ".jpg";
 
+// ── Degradación cuando no se puede convertir HEIC en el navegador ──
+const TIMEOUT_HEIC_MS = 20000;
+
+const MENSAJE_HEIC = (nombre) =>
+  `«${nombre}» está en formato HEIC/HEIF y este navegador no puede convertirlo.\n\n` +
+  `Cómo resolverlo:\n\n` +
+  `1. Desde el celular: sube la foto directamente desde el teléfono (se convierte sola a JPEG).\n\n` +
+  `2. Desde la PC: ábrela con la app "Fotos" de Windows y usa "Guardar como" → JPEG.\n\n` +
+  `3. Para que no vuelva a pasar, configura tu cámara en JPEG:\n` +
+  `   • iPhone: Ajustes → Cámara → Formatos → "Más compatible"\n` +
+  `   • Samsung: Cámara → Ajustes → Opciones avanzadas → desactivar "Imágenes HEIF"`;
+
+const errorHEIC = (nombre) => {
+  const e = new Error(MENSAJE_HEIC(nombre));
+  e.codigo = "HEIC_NO_SOPORTADO";
+  return e;
+};
+
+// El decodificador HEIC (libheif compilado con Emscripten) genera código en
+// runtime con new Function(). Si el CSP no permite 'unsafe-eval', el error se
+// lanza dentro de la librería y la promesa NUNCA se resuelve → la app se cuelga.
+// Por eso comprobamos la capacidad ANTES de intentar, y así el usuario recibe
+// instrucciones al instante en vez de esperar un timeout.
+let _permiteEval = null;
+const permiteGenerarCodigo = () => {
+  if (_permiteEval === null) {
+    try { new Function("return 1"); _permiteEval = true; }
+    catch { _permiteEval = false; }
+  }
+  return _permiteEval;
+};
+
+// Red de seguridad para el resto de fallos: worker que muere en silencio,
+// archivo corrupto, librería que se cuelga. Nunca dejar la UI bloqueada.
+const conTimeout = (promesa, ms) => {
+  let timer;
+  const limite = new Promise((_, rechazar) => {
+    timer = setTimeout(() => rechazar(new Error("TIMEOUT")), ms);
+  });
+  return Promise.race([promesa, limite]).finally(() => clearTimeout(timer));
+};
+
 // Convierte HEIC/HEIF a JPEG. La librería se descarga SOLO cuando hay un HEIC
 // (import dinámico → Vite la separa en su propio chunk, no engorda el bundle).
+// Cualquier fallo degrada al mensaje educativo: nunca cuelga, nunca deja al
+// usuario sin saber qué hacer.
 const convertirHEIC = async (file) => {
+  if (!permiteGenerarCodigo()) throw errorHEIC(file.name);
+
   let heic2any;
   try {
     heic2any = (await import("heic2any")).default;
   } catch {
-    throw new Error("No se pudo cargar el conversor HEIC. Revisa tu conexión e inténtalo de nuevo.");
+    throw errorHEIC(file.name);
   }
-  const salida = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 });
-  const blob = Array.isArray(salida) ? salida[0] : salida;
-  return new File([blob], nombreJpg(file.name), { type: "image/jpeg" });
+
+  try {
+    const salida = await conTimeout(
+      heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 }),
+      TIMEOUT_HEIC_MS
+    );
+    const blob = Array.isArray(salida) ? salida[0] : salida;
+    if (!blob || !blob.size) throw new Error("CONVERSION_VACIA");
+    return new File([blob], nombreJpg(file.name), { type: "image/jpeg" });
+  } catch {
+    throw errorHEIC(file.name);
+  }
 };
 
 // Carga un archivo en un <img> listo para dibujar en canvas
@@ -352,7 +407,7 @@ function LoginScreen({ onLogin }) {
   const onLogo = async e => {
     const f=e.target.files[0]; if(!f){return;}
     if(!f.type.startsWith("image/")){ setErr("El logo debe ser una imagen."); e.target.value=""; return; }
-    try{ const { dataUrl }=await procesarImagen(f,"logo"); setLogo(dataUrl); setErr(""); }catch(ex){ setErr("No se pudo procesar el logo: "+ex.message); }
+    try{ const { dataUrl }=await procesarImagen(f,"logo"); setLogo(dataUrl); setErr(""); }catch(ex){ setErr(ex.codigo==="HEIC_NO_SOPORTADO" ? ex.message : "No se pudo procesar el logo: "+ex.message); }
     e.target.value="";
   };
 
@@ -973,6 +1028,7 @@ export default function App() {
     if (!ordenSel || !files.length) return;
     const lista = Array.from(files);
     const fallidas = [];
+    const avisosHEIC = [];
     try {
       for (let i = 0; i < lista.length; i++) {
         const f = lista[i];
@@ -1003,12 +1059,15 @@ export default function App() {
             return u;
           });
         } catch (e) {
-          // Una foto que falla no debe abortar el resto del lote
-          fallidas.push(`${f.name}: ${e.message}`);
+          // El aviso de HEIC es instructivo y va aparte, no mezclado con fallos técnicos.
+          // Una foto que falla no debe abortar el resto del lote.
+          if (e.codigo === "HEIC_NO_SOPORTADO") avisosHEIC.push(e.message);
+          else fallidas.push(`${f.name}: ${e.message}`);
         }
       }
     } finally {
       setSubiendo("");
+      if (avisosHEIC.length) alert(avisosHEIC[0] + (avisosHEIC.length > 1 ? `\n\n(${avisosHEIC.length} archivos HEIC en total)` : ""));
       if (fallidas.length) alert("No se pudieron procesar estas imágenes:\n\n" + fallidas.join("\n"));
     }
   };
@@ -1034,7 +1093,7 @@ export default function App() {
       const doc={id:Date.now()+Math.random(),tipo:docTipo,nombre:docNombre||nombreArchivo,archivo:nombreArchivo,ext:extFinal,fecha:hoy(),size:tamKB+" KB",url};
       setOrdenes(p=>{const u=p.map(o=>o.id===ordenSel.id?{...o,documentos:[...(o.documentos||[]),doc]}:o);setOrdenSel(u.find(o=>o.id===ordenSel.id));return u;});
       setDocNombre("");
-    }catch(e){alert("Error al adjuntar el documento: "+e.message);}finally{setSubiendo("");}
+    }catch(e){alert(e.codigo==="HEIC_NO_SOPORTADO" ? e.message : "Error al adjuntar el documento: "+e.message);}finally{setSubiendo("");}
   };
   const eliminarDoc=did=>{ if(!confirm("¿Eliminar este documento? Esta acción no se puede deshacer."))return; const u=ordenes.map(o=>o.id===ordenSel.id?{...o,documentos:o.documentos.filter(d=>d.id!==did)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); };
 
@@ -1190,7 +1249,7 @@ export default function App() {
           <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
             <div style={{width:110,height:80,borderRadius:10,overflow:"hidden",border:"0.5px solid "+BRAND.border,background:BRAND.bg,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>{camaraActiva?<video ref={videoRef} style={{width:"100%",height:"100%",objectFit:"cover"}} autoPlay playsInline muted />:form.fotoPrincipal?<img src={form.fotoPrincipal} alt="preview" style={{width:"100%",height:"100%",objectFit:"cover"}} />:<span style={{fontSize:28}}>🚗</span>}</div>
             <canvas ref={canvasRef} style={{display:"none"}} />
-            <div style={{display:"flex",flexDirection:"column",gap:6,flex:1}}>{camaraActiva?(<><button style={{...S.btn,fontSize:12}} onClick={tomarFoto}>📸 Tomar foto</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={cerrarCamara}>Cancelar</button></>):(<><button style={{...S.btn,fontSize:12}} onClick={abrirCamara}>📷 Usar cámara</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={()=>fotoPrincipalRef.current?.click()}>🖼️ Subir foto</button>{form.fotoPrincipal&&<button style={{...S.btnSm(),fontSize:11,color:"#fca5a5"}} onClick={()=>setForm(f=>({...f,fotoPrincipal:null}))}>✕ Quitar</button>}</>)}<input ref={fotoPrincipalRef} type="file" accept={ACCEPT_IMG} style={{display:"none"}} onChange={async ev=>{const f=ev.target.files[0];if(!f)return;if(!pareceImagen(f)){alert("Ese archivo no es una imagen.");ev.target.value="";return;}try{setSubiendo(esHEIC(f)?"Convirtiendo HEIC...":"Procesando imagen...");const {dataUrl}=await procesarImagen(f,"portada");setForm(p=>({...p,fotoPrincipal:dataUrl}));}catch(ex){alert("No se pudo procesar la imagen: "+ex.message);}finally{setSubiendo("");}ev.target.value="";}} /></div>
+            <div style={{display:"flex",flexDirection:"column",gap:6,flex:1}}>{camaraActiva?(<><button style={{...S.btn,fontSize:12}} onClick={tomarFoto}>📸 Tomar foto</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={cerrarCamara}>Cancelar</button></>):(<><button style={{...S.btn,fontSize:12}} onClick={abrirCamara}>📷 Usar cámara</button><button style={{...S.btnSm(),fontSize:12,padding:"5px 10px"}} onClick={()=>fotoPrincipalRef.current?.click()}>🖼️ Subir foto</button>{form.fotoPrincipal&&<button style={{...S.btnSm(),fontSize:11,color:"#fca5a5"}} onClick={()=>setForm(f=>({...f,fotoPrincipal:null}))}>✕ Quitar</button>}</>)}<input ref={fotoPrincipalRef} type="file" accept={ACCEPT_IMG} style={{display:"none"}} onChange={async ev=>{const f=ev.target.files[0];if(!f)return;if(!pareceImagen(f)){alert("Ese archivo no es una imagen.");ev.target.value="";return;}try{setSubiendo(esHEIC(f)?"Convirtiendo HEIC...":"Procesando imagen...");const {dataUrl}=await procesarImagen(f,"portada");setForm(p=>({...p,fotoPrincipal:dataUrl}));}catch(ex){alert(ex.codigo==="HEIC_NO_SOPORTADO" ? ex.message : "No se pudo procesar la imagen: "+ex.message);}finally{setSubiendo("");}ev.target.value="";}} /></div>
           </div>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
