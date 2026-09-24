@@ -278,6 +278,7 @@ const dbToOrden = row => ({
   descuento:parseFloat(row.descuento)||0, notasCobro:row.notas_cobro||"", fechaPago:row.fecha_pago||"", metodoPago:row.metodo_pago||"", referenciaPago:row.referencia_pago||"",
   fotos:Array.isArray(row.fotos)?row.fotos:[], documentos:Array.isArray(row.documentos)?row.documentos:[],
   novedades:Array.isArray(row.novedades)?row.novedades:[], bitacora:Array.isArray(row.bitacora)?row.bitacora:[],
+  refacciones:Array.isArray(row.refacciones)?row.refacciones:[],
 });
 
 const ordenToDB = (o, tallerID) => ({
@@ -294,6 +295,7 @@ const ordenToDB = (o, tallerID) => ({
   fecha_cierre:o.fechaCierre||null, motivo_cierre:o.motivoCierre||null, fecha_terminado:o.fechaTerminado||null, fecha_envio_cobro:o.fechaEnvioCobro||null,
   descuento:o.descuento||0, notas_cobro:o.notasCobro||null, fecha_pago:o.fechaPago||null, metodo_pago:o.metodoPago||null, referencia_pago:o.referenciaPago||null,
   fotos:o.fotos||[], documentos:o.documentos||[], novedades:o.novedades||[], bitacora:o.bitacora||[],
+  refacciones:o.refacciones||[],
 });
 
 function useDesktop(bp=900) {
@@ -355,6 +357,45 @@ const dDias = f => Math.max(0, Math.floor((Date.now()-new Date(f).getTime())/864
 const cDias = f => { if(!f)return 0; const d=new Date(f); if(isNaN(d))return 0; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); };
 
 // CAMBIO 2: cálculo correcto de "Días en taller".
+// ─── Contador de días desde el alta ───────────────────────────────────────────
+const DIAS_ALERTA = 20;   // a partir de aquí la orden se marca en rojo
+
+// Diferencia en días entre dos fechas "YYYY-MM-DD", sin líos de zona horaria
+const difDias = (desde, hasta) => {
+  const a = /^(\d{4})-(\d{2})-(\d{2})/.exec(desde || "");
+  const b = /^(\d{4})-(\d{2})-(\d{2})/.exec(hasta || "");
+  if (!a || !b) return null;
+  const ta = Date.UTC(+a[1], +a[2] - 1, +a[3]);
+  const tb = Date.UTC(+b[1], +b[2] - 1, +b[3]);
+  return Math.max(0, Math.round((tb - ta) / 86400000));
+};
+
+const hoyLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+// Cuenta desde el alta hasta hoy; si la orden ya terminó o se cerró, se congela en esa fecha
+const diasDesdeAlta = o => {
+  const alta = o && (o.fecha || o.fechaPrimerIngreso);
+  if (!alta) return null;
+  const fin = (o.fechaTerminado || o.fechaCierre) || hoyLocal();
+  return difDias(alta, fin);
+};
+
+// Gama de color: verde (día 0) → amarillo → naranja (día 20) → rojo (más de 20)
+const colorDias = d => {
+  if (d > DIAS_ALERTA) return { texto: "hsl(0, 75%, 42%)", fondo: "hsla(0, 85%, 50%, 0.14)", borde: "hsla(0, 85%, 45%, 0.55)" };
+  const h = Math.round(140 - (125 * d) / DIAS_ALERTA);          // 140 (verde) → 15 (naranja-rojo)
+  const l = h > 35 && h < 85 ? 34 : 38;                          // amarillos más oscuros para que se lean sobre blanco
+  return { texto: `hsl(${h}, 75%, ${l}%)`, fondo: `hsla(${h}, 85%, 50%, 0.13)`, borde: `hsla(${h}, 80%, 42%, 0.40)` };
+};
+
+// ─── Integración futura con Perito Valuador ───────────────────────────────────
+// Mientras esté vacío, el botón aparece como "Próximamente".
+// Al lanzar, pon aquí la URL de la app y el botón se activa solo.
+const PERITO_VALUADOR_URL = "";
+
 const diasEnTaller = o => {
   const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
   if (!ini) return 0;
@@ -783,6 +824,119 @@ function ExportarExcel({ ordenes, S }) {
   );
 }
 
+function ContadorDias({ o, grande }) {
+  const d = diasDesdeAlta(o);
+  if (d === null) return null;
+  const c = colorDias(d);
+  const alerta = d > DIAS_ALERTA;
+  const alta = o.fecha || o.fechaPrimerIngreso;
+  return (
+    <span title={`Alta: ${alta}${alerta ? ` · rebasa ${DIAS_ALERTA} días` : ""}`}
+      style={{display:"inline-flex",alignItems:"center",gap:4,background:c.fondo,color:c.texto,border:"1px solid "+c.borde,borderRadius:20,padding:grande?"3px 10px":"2px 8px",fontSize:grande?12:10,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+      {alerta ? "⚠" : "⏱"} {d} día{d !== 1 ? "s" : ""}
+    </span>
+  );
+}
+
+const REFACCIONES_RAPIDAS = ["Fascia delantera","Fascia trasera","Faro","Calavera","Salpicadera","Cofre","Puerta","Espejo lateral","Parrilla","Parabrisas"];
+
+function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, usuario, S }) {
+  const [txt, setTxt] = useState("");
+  const [cant, setCant] = useState("1");
+  const lista = o.refacciones || [];
+  const total = lista.length;
+  const recibidas = lista.filter(r => r.recibida).length;
+  const pct = total ? Math.round((recibidas * 100) / total) : 0;
+  const completa = total > 0 && recibidas === total;
+
+  const guardar = (nueva, extra, entrada) => {
+    const upd = ordenes.map(x => {
+      if (x.id !== o.id) return x;
+      const n = { ...x, refacciones: nueva, ...(extra || {}) };
+      if (entrada) n.bitacora = [...(x.bitacora || []), { ...entrada, fecha: hoy() }];
+      return n;
+    });
+    setOrdenes(upd);
+    setOrdenSel(upd.find(x => x.id === o.id));
+  };
+
+  // Al completar la lista, se registra la fecha de "Refacciones completas" de la ficha (si estaba vacía)
+  const aplicar = nueva => {
+    const quedaCompleta = nueva.length > 0 && nueva.every(r => r.recibida);
+    if (quedaCompleta && !completa) {
+      guardar(nueva, o.refaccionesCompletas ? {} : { refaccionesCompletas: hoyLocal() },
+        { accion: `Refacciones completas (${nueva.length})`, usuario: usuario.nombre });
+    } else guardar(nueva);
+  };
+
+  const agregar = (nombreDirecto) => {
+    const nombre = (nombreDirecto || txt).trim();
+    if (!nombre) return;
+    if (lista.some(r => r.nombre.toLowerCase() === nombre.toLowerCase())) { alert(`«${nombre}» ya está en la lista.`); return; }
+    const cantidad = nombreDirecto ? 1 : Math.max(1, parseInt(cant, 10) || 1);
+    aplicar([...lista, { id: Date.now() + Math.random(), nombre, cantidad, recibida: false, fechaRecibida: "" }]);
+    if (!nombreDirecto) { setTxt(""); setCant("1"); }
+  };
+  const alternar = id => aplicar(lista.map(r => r.id === id ? { ...r, recibida: !r.recibida, fechaRecibida: r.recibida ? "" : hoyLocal() } : r));
+  const quitar = id => { if (!confirm("¿Quitar esta refacción de la lista?")) return; aplicar(lista.filter(r => r.id !== id)); };
+  const marcarTodas = () => aplicar(lista.map(r => r.recibida ? r : { ...r, recibida: true, fechaRecibida: hoyLocal() }));
+
+  const colorBarra = completa ? BRAND.green : pct >= 50 ? "#F59E0B" : BRAND.accent;
+  const rapidasDisponibles = REFACCIONES_RAPIDAS.filter(n => !lista.some(r => r.nombre.toLowerCase() === n.toLowerCase()));
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+          <span style={{fontSize:12,fontWeight:700,color:BRAND.text}}>Avance de refacciones</span>
+          <span style={{fontSize:12,color:BRAND.muted}}><b style={{color:colorBarra,fontSize:15}}>{recibidas}</b> de {total} recibidas</span>
+        </div>
+        <div style={{height:8,background:BRAND.dimmed+"66",borderRadius:4,overflow:"hidden"}}>
+          <div style={{height:"100%",width:pct+"%",background:colorBarra,borderRadius:4,transition:"width 0.25s"}} />
+        </div>
+        {completa && <div style={{marginTop:10,fontSize:12,color:BRAND.green,fontWeight:700}}>✓ Todas las refacciones recibidas{o.refaccionesCompletas ? ` · ${o.refaccionesCompletas}` : ""}</div>}
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {total === 0 && <div style={{textAlign:"center",color:BRAND.muted,fontSize:12,padding:"1.25rem 0"}}>Sin refacciones registradas</div>}
+        {lista.map(r => (
+          <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,background:r.recibida?BRAND.green+"0F":BRAND.card,border:"1px solid "+(r.recibida?BRAND.green+"44":BRAND.border),borderRadius:9,padding:"0.55rem 0.75rem"}}>
+            <label style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0,cursor:puedeEdit?"pointer":"default"}}>
+              <input type="checkbox" checked={!!r.recibida} disabled={!puedeEdit} onChange={()=>alternar(r.id)} style={{width:20,height:20,accentColor:BRAND.green,flexShrink:0,cursor:puedeEdit?"pointer":"default"}} />
+              <span style={{flex:1,minWidth:0}}>
+                <span style={{display:"block",fontSize:13,fontWeight:600,color:r.recibida?BRAND.muted:BRAND.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nombre}{r.cantidad > 1 && <span style={{color:BRAND.accent,fontWeight:700}}> ×{r.cantidad}</span>}</span>
+                <span style={{display:"block",fontSize:10,color:r.recibida?BRAND.green:BRAND.muted}}>{r.recibida ? `Recibida${r.fechaRecibida ? " · " + r.fechaRecibida : ""}` : "Pendiente"}</span>
+              </span>
+            </label>
+            {puedeEdit && <button onClick={()=>quitar(r.id)} title="Quitar" style={{...S.btnSm(),fontSize:11,padding:"3px 8px",flexShrink:0}}>✕</button>}
+          </div>
+        ))}
+      </div>
+
+      {puedeEdit && total > 0 && !completa && (
+        <button onClick={marcarTodas} style={{background:"none",border:"1px dashed "+BRAND.green,color:BRAND.green,borderRadius:8,padding:"7px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Marcar todas como recibidas</button>
+      )}
+
+      {puedeEdit && (
+        <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
+          <div style={{fontSize:12,fontWeight:600,color:BRAND.accent,marginBottom:8}}>Agregar refacción</div>
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            <input style={{...S.input,flex:1,fontSize:12}} placeholder="Ej. Fascia delantera" value={txt} onChange={e=>setTxt(e.target.value)} onKeyDown={e=>{ if (e.key === "Enter") agregar(); }} />
+            <input type="number" min="1" title="Cantidad" style={{...S.input,width:58,fontSize:12,textAlign:"center"}} value={cant} onChange={e=>setCant(e.target.value)} onKeyDown={e=>{ if (e.key === "Enter") agregar(); }} />
+            <button style={{...S.btn,fontSize:12,padding:"0.5rem 0.85rem",opacity:txt.trim()?1:0.45}} disabled={!txt.trim()} onClick={()=>agregar()}>Agregar</button>
+          </div>
+          {rapidasDisponibles.length > 0 && <>
+            <div style={{fontSize:10,color:BRAND.muted,marginBottom:6}}>Agregar rápido:</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+              {rapidasDisponibles.map(n => <button key={n} onClick={()=>agregar(n)} style={{fontSize:11,background:"#fff",border:"1px solid "+BRAND.border,color:BRAND.muted,borderRadius:20,padding:"3px 10px",cursor:"pointer"}}>+ {n}</button>)}
+            </div>
+          </>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario }) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
@@ -792,14 +946,14 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
           {o.fotoPrincipal?<img src={o.fotoPrincipal} alt="v" style={{width:36,height:28,objectFit:"cover",borderRadius:6,border:"0.5px solid "+BRAND.border,flexShrink:0}} />:<div style={{width:36,height:28,background:BRAND.card2,borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🚗</div>}
           <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6}}><EditarId o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} fSize={14} puedeAdmin={puedeAdmin} /><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{o.cliente}</span></div><div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{o.vehiculo} - {o.placa}{o.telefono?" - "+o.telefono:""}</div></div>
-          <span style={{background:eAct.color+"22",color:eAct.color,border:"0.5px solid "+eAct.color+"44",borderRadius:20,padding:"3px 8px",fontSize:10,fontWeight:700,flexShrink:0}}>{eAct.label}</span>
+          <ContadorDias o={o} grande /><span style={{background:eAct.color+"22",color:eAct.color,border:"0.5px solid "+eAct.color+"44",borderRadius:20,padding:"3px 8px",fontSize:10,fontWeight:700,flexShrink:0}}>{eAct.label}</span>
         </div>
         <div style={{display:"flex",gap:2,marginBottom:8}}>{ESTADOS.map((es,i)=><div key={es.key} style={{flex:1}}><div style={{height:3,borderRadius:2,background:i<idx?BRAND.accent:i===idx?BRAND.accent+"66":BRAND.dimmed,marginBottom:2}} /><div style={{fontSize:7,color:i===idx?BRAND.accent:i<idx?BRAND.muted:BRAND.dimmed,textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{es.label.split(" ")[0]}</div></div>)}</div>
         {puedeEdit&&<div style={{display:"flex"}}>{o.estado!=="armado"?<button style={{...S.btn,flex:1,padding:"9px",fontSize:13}} onClick={()=>avanzarEstado(o.id)}>Avanzar al siguiente paso</button>:<button style={{...S.btnGreen,flex:1,padding:"9px",fontSize:13}} onClick={()=>setModalCobro(o)}>Enviar a cobro</button>}</div>}
       </div>
       <div style={{borderBottom:"0.5px solid "+BRAND.border,background:BRAND.card}}>
         {/* CAMBIO: etiqueta "💬 Novedades" completa */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%3!==2?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"refacciones",l:"🔧 Refacciones"+((o.refacciones||[]).length?" ("+(o.refacciones||[]).filter(r=>r.recibida).length+"/"+(o.refacciones||[]).length+")":"")},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%4!==3?"0.5px solid "+BRAND.border:"none",borderTop:i>=4?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
         <button onClick={()=>setOrdenSel(null)} style={{width:"100%",padding:"7px",fontSize:11,cursor:"pointer",color:BRAND.muted,background:"none",border:"none",borderTop:"0.5px solid "+BRAND.border,textAlign:"center"}}>← Volver a lista</button>
       </div>
       <div style={{padding:"1rem"}}>
@@ -817,6 +971,13 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             {o.costo>0&&<div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:12,color:BRAND.muted}}>Costo estimado</span><span style={{fontSize:17,fontWeight:800,color:BRAND.green}}>${o.costo.toLocaleString()}</span></div>}
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{puedeEdit&&idx>0&&<button style={{flex:1,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalRetroceder(o)}>Retroceder (supervisor)</button>}{puedeAdmin&&<button style={{flex:1,background:"#7F1D1D22",color:"#fca5a5",border:"0.5px solid #991b1b33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalCerrar(o)}>Cerrar orden</button>}</div>
             {puedeEdit&&<button style={{width:"100%",background:BRAND.green+"11",color:BRAND.green,border:"1.5px solid "+BRAND.green+"55",borderRadius:8,padding:"10px",cursor:"pointer",fontSize:13,fontWeight:700}} onClick={()=>setModalTerminar(o)}>Marcar siniestro como terminado</button>}
+            {(()=>{ const listo=!!PERITO_VALUADOR_URL; return (
+              <button disabled={!listo} title={listo?"Abrir Perito Valuador":"Disponible próximamente"}
+                onClick={()=>{ if(listo) window.open(PERITO_VALUADOR_URL+"?orden="+encodeURIComponent(o.id),"_blank","noopener,noreferrer"); }}
+                style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,flexWrap:"wrap",background:listo?BRAND.purple:BRAND.bg,color:listo?"#fff":BRAND.muted,border:(listo?"1.5px solid ":"1.5px dashed ")+(listo?BRAND.purple:BRAND.purple+"55"),borderRadius:8,padding:"10px",cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:600}}>
+                🧮 Realizar valuación en Perito Valuador
+                {!listo&&<span style={{fontSize:10,background:BRAND.purple+"1A",color:BRAND.purple,borderRadius:20,padding:"2px 8px",fontWeight:700,letterSpacing:0.5}}>PRÓXIMAMENTE</span>}
+              </button>); })()}
           </div>
         )}
         {tabDetalle==="fotos"&&(
@@ -844,6 +1005,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
         )}
         {tabDetalle==="ficha"&&<FichaDetalle o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} />}
         {tabDetalle==="novedades"&&<Novedades orden={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} />}
+        {tabDetalle==="refacciones"&&<ChecklistRefacciones o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} puedeEdit={puedeEdit} usuario={usuario} S={S} />}
         {tabDetalle==="bitacora"&&<div><div style={{fontSize:12,color:BRAND.muted,marginBottom:12}}>Historial de cambios</div>{(o.bitacora||[]).slice().reverse().map((b,i)=><div key={i} style={{display:"flex",gap:12,marginBottom:14,alignItems:"flex-start"}}><div style={{width:8,height:8,borderRadius:"50%",background:BRAND.accent,marginTop:5,flexShrink:0}} /><div><div style={{fontSize:13,fontWeight:500}}>{b.accion}</div><div style={{fontSize:11,color:BRAND.muted}}>{b.usuario} - {b.fecha}</div></div></div>)}</div>}
       </div>
     </div>
@@ -853,13 +1015,13 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
 function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
   const S=mkS(); const e=ESTADOS.find(x=>x.key===o.estado)||ESTADOS[0]; const idx=PASOS.indexOf(o.estado);
   return (
-    <div style={{...S.card,cursor:"pointer",padding:"0.85rem"}} onClick={onClick}>
+    <div style={{...S.card,cursor:"pointer",padding:"0.85rem",...((diasDesdeAlta(o)||0)>DIAS_ALERTA?{borderLeft:"4px solid hsl(0, 75%, 45%)"}:{})}} onClick={onClick}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
         {o.fotoPrincipal?<img src={o.fotoPrincipal} style={{width:48,height:36,objectFit:"cover",borderRadius:7,flexShrink:0}} alt="v" />:<div style={{width:48,height:36,background:BRAND.bg,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🚗</div>}
         <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:BRAND.accent}}>{o.id}</span><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.cliente}</span></div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.vehiculo}</div></div>
         {badge?<span style={{flexShrink:0,background:BRAND.muted+"22",color:BRAND.muted,borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:600}}>{badge}</span>:<span style={{flexShrink:0,background:e.color+"18",color:e.color,border:"0.5px solid "+e.color+"44",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:500}}>{e.label}</span>}
       </div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString()}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{(o.refacciones||[]).length>0&&<span style={{fontSize:10,background:BRAND.bg,color:(o.refacciones.every(r=>r.recibida)?BRAND.green:BRAND.muted),borderRadius:5,padding:"2px 7px",fontWeight:600}}>🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString()}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
       <div style={{display:"flex",gap:2}}>{PASOS.map((p,j)=><div key={p} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}><div style={{height:3,width:"100%",borderRadius:2,background:j<idx?BRAND.accent:j===idx?BRAND.accent+"55":BRAND.dimmed}} /><span style={{fontSize:8,color:j===idx?BRAND.accent:j<idx?BRAND.muted:BRAND.dimmed,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%",textAlign:"center"}}>{ESTADOS[j].label.split(" ")[0]}</span></div>)}</div>
     </div>
   );
@@ -1118,7 +1280,7 @@ export default function App() {
       fecha: hoy(),
       estado: "presupuesto",
       costo: parseFloat(form.costo) || 0,
-      fotos: [], documentos: [], novedades: [],
+      fotos: [], documentos: [], novedades: [], refacciones: [],
       bitacora: [{ accion: "Orden creada", usuario: usuario.nombre, fecha: hoy() }]
     };
     setOrdenes(p => [n, ...p]);
@@ -1158,6 +1320,11 @@ export default function App() {
   const renderDashboard=()=>{const rec=ordenes.filter(o=>o.estado!=="armado");return(
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(4,1fr)":"repeat(2,1fr)",gap:10}}>{[{label:"Órdenes Activas",value:totalAct,color:BRAND.accent},{label:"Para Cobro",value:ordenesCobro.length,color:BRAND.green},{label:"Total Cobrado",value:"$"+totCobradoGlobal.toLocaleString(),color:BRAND.purple},{label:"Terminadas",value:ordenesTerminadas.length,color:BRAND.blue}].map((m,i)=><div key={i} style={{...S.metric,border:"0.5px solid "+m.color+"25"}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{m.label}</div><div style={{fontSize:24,fontWeight:800,color:m.color}}>{m.value}</div></div>)}</div>
+      {(()=>{ const vencidas=ordenes.filter(o=>(diasDesdeAlta(o)||0)>DIAS_ALERTA); if(!vencidas.length) return null; const n=vencidas.length; return (
+        <div onClick={()=>{setVista("ordenes");setSubVista("activas");setOrdenSel(null);}} style={{background:"hsla(0, 85%, 50%, 0.08)",border:"1px solid hsla(0, 85%, 45%, 0.40)",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}>
+          <span style={{fontSize:13,color:"hsl(0, 75%, 40%)",fontWeight:700}}>⚠ {n} orden{n!==1?"es":""} lleva{n!==1?"n":""} más de {DIAS_ALERTA} días desde su alta</span>
+          <span style={{fontSize:12,color:"hsl(0, 75%, 40%)",fontWeight:600,flexShrink:0}}>Ver →</span>
+        </div>); })()}
       <div style={S.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>Órdenes en Proceso</div><span style={{fontSize:11,color:BRAND.muted}}>{rec.length} orden{rec.length!==1?"es":""}</span></div>
         {rec.length===0&&<div style={{textAlign:"center",color:BRAND.muted,padding:"1.5rem",fontSize:13}}>Sin órdenes activas</div>}
