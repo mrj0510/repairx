@@ -125,9 +125,38 @@ const supaApi = {
     const r = await fetch(SUPA_URL + "/rest/v1/perfiles?id=eq." + uid + "&select=*", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } });
     const d = await r.json(); return Array.isArray(d) ? d[0] : null;
   },
+  // Confirma que un código existe y devuelve solo el nombre del taller.
+  // No permite listar códigos: la tabla talleres ya no es legible sin sesión.
   verificarTaller: async (codigo) => {
-    const r = await fetch(SUPA_URL + "/rest/v1/talleres?codigo=eq." + encodeURIComponent(codigo) + "&select=nombre,codigo", { headers: supaHeaders });
-    const d = await r.json(); return Array.isArray(d) ? d[0] : null;
+    try {
+      const r = await fetch(SUPA_URL + "/rest/v1/rpc/verificar_codigo_taller", {
+        method:"POST", headers: supaHeaders, body: JSON.stringify({ p_codigo: codigo }),
+      });
+      if (!r.ok) return null;
+      const nombre = await r.json();
+      return nombre ? { nombre, codigo } : null;
+    } catch { return null; }
+  },
+  // El servidor asigna el folio: dos personas creando órdenes a la vez nunca reciben el mismo número
+  siguienteFolio: async (token) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/rpc/siguiente_folio", {
+      method:"POST", headers:{ ...supaHeaders,"Authorization":"Bearer "+token }, body:"{}",
+    });
+    if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo generar el folio")); }
+    const folio = await r.json();
+    if (typeof folio !== "string" || !/^OT-\d+$/.test(folio)) throw new Error("Respuesta inesperada del servidor al generar el folio.");
+    return folio;
+  },
+  // Renombra la MISMA fila (antes se creaba una fila nueva y la vieja quedaba como duplicado)
+  renombrarOrden: async (token, tallerId, idViejo, idNuevo) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(idViejo), {
+      method:"PATCH",
+      headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=minimal" },
+      body: JSON.stringify({ id: idNuevo }),
+    });
+    if (r.status === 409) throw new Error("DUPLICADO");
+    if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo renombrar")); }
+    return true;
   },
   getUsuariosTaller: async (token, taller) => {
     const r = await fetch(SUPA_URL + "/rest/v1/perfiles?taller=eq." + encodeURIComponent(taller) + "&select=id,nombre,rol,email&order=nombre", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } });
@@ -139,7 +168,7 @@ const supaApi = {
   },
   getOrdenes: async (token) => { const r = await fetch(SUPA_URL + "/rest/v1/ordenes?select=*&order=creado_en.desc", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } }); return r.json(); },
   upsertOrden: async (token, orden) => {
-    const r = await fetch(SUPA_URL + "/rest/v1/ordenes", {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?on_conflict=taller_id,id", {
       method:"POST",
       headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"resolution=merge-duplicates,return=minimal" },
       body:JSON.stringify(orden),
@@ -847,15 +876,28 @@ function Novedades({ orden, ordenes, setOrdenes, setOrdenSel, S }) {
   );
 }
 
-function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin }) {
+function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usuario }) {
   const [edit,setEdit]=useState(false); const [val,setVal]=useState(o.id); const ref=useRef();
-  const ok=()=>{ const nv=(val.trim()||o.id); if(nv!==o.id&&ordenes.some(x=>x.id===nv)){alert("Ya existe una orden con ese ID.");return;} const upd=ordenes.map(x=>x.id===o.id?{...x,id:nv}:x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===nv)||null); setEdit(false); };
+  const [guardandoId,setGuardandoId]=useState(false);
+  const ok=async()=>{
+    const nv=val.trim()||o.id;
+    if(nv===o.id){ setEdit(false); return; }
+    if(!/^[A-Za-z0-9_-]{1,20}$/.test(nv)){ alert("Usa solo letras, números y guiones (máximo 20 caracteres)."); return; }
+    if(ordenes.some(x=>x.id===nv)){ alert("Ya existe una orden con ese número."); return; }
+    if(usuario&&!usuario.modoDemo){
+      setGuardandoId(true);
+      try{ await supaApi.renombrarOrden(usuario.token, o.tallerId||usuario.taller, o.id, nv); }
+      catch(e){ setGuardandoId(false); alert(e.message==="DUPLICADO"?"Ya existe una orden con ese número en tu taller (puede estar en Cobro, Terminadas o Historial).":"No se pudo renombrar la orden. "+e.message); return; }
+      setGuardandoId(false);
+    }
+    const upd=ordenes.map(x=>x.id===o.id?{...x,id:nv}:x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===nv)||null); setEdit(false);
+  };
   const cancel=()=>{ setVal(o.id); setEdit(false); };
   useEffect(()=>{ if(edit&&ref.current)ref.current.focus(); },[edit]);
   if (edit) return (
     <div style={{display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
       <input ref={ref} value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")ok();if(e.key==="Escape")cancel();}} style={{background:BRAND.bg,border:"1px solid "+BRAND.accent,borderRadius:6,padding:"2px 7px",color:BRAND.accent,fontWeight:700,fontSize:fSize||13,width:Math.max(80,val.length*9)+"px",outline:"none"}} />
-      <button onClick={ok} style={{background:BRAND.accent,border:"none",borderRadius:5,color:"#fff",fontSize:11,padding:"2px 7px",cursor:"pointer"}}>OK</button>
+      <button onClick={ok} disabled={guardandoId} style={{background:BRAND.accent,border:"none",borderRadius:5,color:"#fff",fontSize:11,padding:"2px 7px",cursor:guardandoId?"wait":"pointer",opacity:guardandoId?0.6:1}}>{guardandoId?"…":"OK"}</button>
       <button onClick={cancel} style={{background:BRAND.dimmed,border:"none",borderRadius:5,color:BRAND.text,fontSize:11,padding:"2px 7px",cursor:"pointer"}}>✕</button>
     </div>
   );
@@ -1094,7 +1136,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
       <div style={{padding:"0.75rem 1rem",background:BRAND.bg,borderBottom:"0.5px solid "+BRAND.border}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
           {o.fotoPrincipal?<img src={o.fotoPrincipal} alt="v" style={{width:36,height:28,objectFit:"cover",borderRadius:6,border:"0.5px solid "+BRAND.border,flexShrink:0}} />:<div style={{width:36,height:28,background:BRAND.card2,borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🚗</div>}
-          <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6}}><EditarId o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} fSize={14} puedeAdmin={puedeAdmin} /><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{o.cliente}</span></div><div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{o.vehiculo} - {o.placa}{o.telefono?" - "+o.telefono:""}</div></div>
+          <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6}}><EditarId o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} fSize={14} puedeAdmin={puedeAdmin} usuario={usuario} /><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{o.cliente}</span></div><div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{o.vehiculo} - {o.placa}{o.telefono?" - "+o.telefono:""}</div></div>
           <ContadorDias o={o} grande /><span style={{background:eAct.color+"22",color:eAct.color,border:"0.5px solid "+eAct.color+"44",borderRadius:20,padding:"3px 8px",fontSize:10,fontWeight:700,flexShrink:0}}>{eAct.label}</span>
         </div>
         <div style={{display:"flex",gap:2,marginBottom:8}}>{ESTADOS.map((es,i)=><div key={es.key} style={{flex:1}}><div style={{height:3,borderRadius:2,background:i<idx?BRAND.accent:i===idx?BRAND.accent+"66":BRAND.dimmed,marginBottom:2}} /><div style={{fontSize:7,color:i===idx?BRAND.accent:i<idx?BRAND.muted:BRAND.dimmed,textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{es.label.split(" ")[0]}</div></div>)}</div>
@@ -1258,6 +1300,7 @@ export default function App() {
   // CAMBIO 4: servicio ahora es array para multi-selección
   const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:[],tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null});
 
+  const creandoRef=useRef(false);
   const fotoRef=useRef(); const docRef=useRef(); const fotoPrincipalRef=useRef(); const videoRef=useRef(); const canvasRef=useRef();
 
   useEffect(()=>{ setPagina(1); }, [busqueda, filtroEstado, subVista]);
@@ -1433,10 +1476,27 @@ export default function App() {
   const cerrarCamara=()=>{if(videoRef.current?.srcObject)videoRef.current.srcObject.getTracks().forEach(t=>t.stop());setCamaraActiva(false);};
 
   // CAMBIO 5: crearOrden con validación de taller y conversión de array a string
-  const crearOrden = () => {
+  const crearOrden = async () => {
     if (!usuario.taller) {
       alert("Tu cuenta no tiene un taller asignado. Cierra sesión, vuelve a entrar e intenta de nuevo.");
       return;
+    }
+    if (creandoRef.current) return;          // evita doble clic = dos órdenes
+    creandoRef.current = true;
+    let folio;
+    try {
+      if (usuario.modoDemo) {
+        folio = generarIdOrden(ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial);
+      } else {
+        setSubiendo("Creando orden...");
+        folio = await supaApi.siguienteFolio(usuario.token);
+      }
+    } catch (e) {
+      alert("No se pudo generar el número de orden. Verifica tu conexión e inténtalo de nuevo.\n\n" + e.message);
+      return;
+    } finally {
+      setSubiendo("");
+      creandoRef.current = false;
     }
     const servicioStr = Array.isArray(form.servicio) ? form.servicio.join(", ") : form.servicio;
     const n = {
@@ -1444,7 +1504,7 @@ export default function App() {
       ...EXTRA(),
       servicio: servicioStr,
       fechaPrimerIngreso: hoy(),
-      id: generarIdOrden(ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial),
+      id: folio,
       tallerId: usuario.taller,
       fecha: hoy(),
       estado: "presupuesto",
