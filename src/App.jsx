@@ -51,6 +51,7 @@ const traducirErrorAuth = (data, status) => {
   if (/invalid login credentials/i.test(txt))               return ERRORES_AUTH.invalid_credentials;
   if (/already (been )?registered|already exists/i.test(txt)) return ERRORES_AUTH.user_already_exists;
   if (/email not confirmed/i.test(txt))                     return ERRORES_AUTH.email_not_confirmed;
+  if (/database error saving new user/i.test(txt))          return "No se pudo crear la cuenta. Si te estás uniendo a un taller, verifica el código e inténtalo de nuevo.";
   if (status === 429 || /rate limit/i.test(txt))            return ERRORES_AUTH.over_request_rate_limit;
   if (/password/i.test(txt) && /(at least|should|weak|contain|characters)/i.test(txt)) return ERRORES_AUTH.weak_password;
   return txt || "No se pudo completar la operación. Inténtalo de nuevo.";
@@ -164,7 +165,10 @@ const supaApi = {
   },
   actualizarRol: async (token, uid, rol) => {
     const r = await fetch(SUPA_URL + "/rest/v1/perfiles?id=eq." + uid, { method:"PATCH", headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=representation" }, body: JSON.stringify({ rol }) });
-    return r.json();
+    const data = await r.json().catch(() => null);
+    if (!r.ok) throw new Error((data && data.message) || ("Error " + r.status));
+    if (!Array.isArray(data) || data.length === 0) throw new Error("No tienes permiso para modificar a este usuario.");
+    return data;
   },
   getOrdenes: async (token) => { const r = await fetch(SUPA_URL + "/rest/v1/ordenes?select=*&order=creado_en.desc", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } }); return r.json(); },
   upsertOrden: async (token, orden) => {
@@ -601,6 +605,42 @@ function NuevaPasswordScreen({ token, onListo, onCancelar }) {
   );
 }
 
+function PantallaPendiente({ usuario, onActualizar, onLogout }) {
+  const [revisando, setRevisando] = useState(false);
+  const [nota, setNota] = useState("");
+  const rechazado = usuario.rol === "rechazado";
+  const taller = usuario.tallerNombre || "el taller";
+  const revisar = async () => {
+    setRevisando(true); setNota("");
+    try {
+      const perfil = await supaApi.getPerfil(usuario.token, usuario.id);
+      if (perfil && perfil.rol && perfil.rol !== usuario.rol) {
+        onActualizar({ ...usuario, rol: perfil.rol, taller: perfil.taller || usuario.taller, tallerNombre: perfil.taller_nombre || usuario.tallerNombre });
+        return;
+      }
+      setNota("Tu solicitud sigue en espera. Vuelve a revisar más tarde.");
+    } catch { setNota("No se pudo consultar. Revisa tu conexión."); }
+    finally { setRevisando(false); }
+  };
+  return (
+    <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
+      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)",textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:10}}>{rechazado ? "⛔" : "⏳"}</div>
+        <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>{rechazado ? "Solicitud no aprobada" : "Solicitud en espera"}</div>
+        <div style={{fontSize:13,color:BRAND.muted,lineHeight:1.55,marginBottom:18}}>
+          {rechazado
+            ? <>El administrador de <b style={{color:BRAND.text}}>{taller}</b> no aprobó tu acceso. Si crees que es un error, comunícate con él.</>
+            : <>Tu solicitud para unirte a <b style={{color:BRAND.text}}>{taller}</b> está esperando la aprobación del administrador. Cuando te apruebe, pulsa «Revisar de nuevo».</>}
+        </div>
+        {nota && <div style={{fontSize:12,color:BRAND.muted,background:BRAND.bg,borderRadius:8,padding:"8px 12px",marginBottom:12}}>{nota}</div>}
+        {!rechazado && <button onClick={revisar} disabled={revisando} style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.7rem",fontSize:14,fontWeight:700,cursor:revisando?"wait":"pointer",opacity:revisando?0.7:1,marginBottom:8}}>{revisando ? "Revisando..." : "Revisar de nuevo"}</button>}
+        <button onClick={onLogout} style={{width:"100%",background:"none",border:"1px solid "+BRAND.border,color:BRAND.muted,borderRadius:10,padding:"0.6rem",fontSize:13,cursor:"pointer"}}>Cerrar sesión</button>
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin, aviso }) {
   const [modo,setModo]=useState("login");
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
@@ -629,7 +669,7 @@ function LoginScreen({ onLogin, aviso }) {
       id: user.id, email: user.email,
       nombre: perfil?.nombre || user.email.split("@")[0],
       av: (perfil?.nombre || user.email)[0].toUpperCase(),
-      rol: perfil?.rol || "asesor",
+      rol: perfil?.rol || "pendiente",
       taller: perfil?.taller || "",
       tallerNombre: perfil?.taller_nombre || perfil?.taller || "Mi Taller",
       logo: perfil?.taller_logo || null,
@@ -653,7 +693,7 @@ function LoginScreen({ onLogin, aviso }) {
     if(!tallerNombre.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
     { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
     setL(true);setErr("");setInfo("");
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"", rol:"admin" });
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"" });
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
     else { setInfo("¡Taller registrado! Si te pide confirmar el correo, hazlo y luego inicia sesión. Tu código aparecerá en la sección Equipo."); setModo("login"); setL(false); }
@@ -665,10 +705,10 @@ function LoginScreen({ onLogin, aviso }) {
     setL(true);setErr("");setInfo("");
     const taller = await supaApi.verificarTaller(codigo.trim().toUpperCase());
     if(!taller){ setErr("El código de taller no existe. Verifícalo con tu administrador."); setL(false); return; }
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase(), rol:"asesor" });
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase() });
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
-    else { setInfo("¡Cuenta creada en "+taller.nombre+"! Si te pide confirmar el correo, hazlo y luego inicia sesión."); setModo("login"); setL(false); }
+    else { setInfo("¡Solicitud enviada a "+taller.nombre+"! Si te pide confirmar el correo, hazlo. Podrás entrar cuando el administrador del taller te apruebe."); setModo("login"); setL(false); }
   };
 
   const doRecuperar = async () => {
@@ -785,7 +825,7 @@ function UsuarioBadge({ usuario, onLogout }) {
   );
 }
 
-function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre }) {
+function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre, pendientes }) {
   const [open, setOpen] = useState(false);
   const NAV = [
     {id:"dashboard", icon:"📊", label:"Dashboard"},
@@ -794,7 +834,7 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
     {id:"historial", icon:"🗂️", label:"Historial"+(hLen?" ("+hLen+")":"")},
     {id:"nueva",     icon:"➕", label:"Nueva Orden"},
     {id:"exportar",  icon:"📊", label:"Exportar Excel"},
-    ...(esAdmin ? [{id:"equipo", icon:"👥", label:"Equipo"}] : []),
+    ...(esAdmin ? [{id:"equipo", icon:"👥", label:"Equipo"+(pendientes?" 🔔 "+pendientes:"")}] : []),
   ];
   const go = id => { setVista(id); setOrdenSel(null); setOpen(false); };
   const panel = (
@@ -1247,9 +1287,14 @@ export default function App() {
     if (!u) { setIniciando(false); return; }
     if (u.modoDemo) { setUsuario(u); setIniciando(false); return; }
     if (u.refreshToken) {
-      supaAuth.refreshSession(u.refreshToken).then(({ session, error }) => {
+      supaAuth.refreshSession(u.refreshToken).then(async ({ session, error }) => {
         if (error || !session?.access_token) { borrarSesion(); setIniciando(false); return; }
-        setUsuario({ ...u, token:session.access_token, refreshToken:session.refresh_token, expiresAt:Date.now()+(session.expires_in||3600)*1000 });
+        let act = { ...u, token:session.access_token, refreshToken:session.refresh_token, expiresAt:Date.now()+(session.expires_in||3600)*1000 };
+        try {
+          const perfil = await supaApi.getPerfil(session.access_token, u.id);
+          if (perfil) act = { ...act, rol: perfil.rol || act.rol, taller: perfil.taller || act.taller, tallerNombre: perfil.taller_nombre || act.tallerNombre };
+        } catch (_) {}
+        setUsuario(act);
         setIniciando(false);
       }).catch(() => { borrarSesion(); setIniciando(false); });
     } else { setUsuario(u); setIniciando(false); }
@@ -1292,6 +1337,7 @@ export default function App() {
   const [cargando,setCargando]=useState(false);
   const [errorSync,setErrorSync]=useState("");
   const [usuarios,setUsuarios]=useState([]);
+  const [rolAprobar,setRolAprobar]=useState({});   // rol elegido para cada solicitud pendiente
   const [modalCerrar,setModalCerrar]=useState(null);
   const [modalRetroceder,setModalRetroceder]=useState(null);
   const [modalCobro,setModalCobro]=useState(null);
@@ -1306,7 +1352,8 @@ export default function App() {
   useEffect(()=>{ setPagina(1); }, [busqueda, filtroEstado, subVista]);
 
   useEffect(() => {
-    if (vista!=="equipo" || !usuario || usuario.modoDemo) return;
+    if (!usuario || usuario.modoDemo || !puedePerm(usuario,"todo")) return;
+    if (vista!=="equipo" && vista!=="dashboard") return;
     supaApi.getUsuariosTaller(usuario.token, usuario.taller).then(d => { if(Array.isArray(d)) setUsuarios(d); }).catch(()=>{});
   }, [vista, usuario]);
 
@@ -1361,6 +1408,10 @@ export default function App() {
     onListo={()=>{ borrarSesion(); setUsuario(null); setRecuperacion(null); setAvisoLogin({ tipo:"info", texto:"Contraseña actualizada. Inicia sesión con tu nueva contraseña." }); }}
     onCancelar={()=>setRecuperacion(null)} />;
   if (!usuario) return <LoginScreen key={avisoLogin ? avisoLogin.texto : "login"} onLogin={setUsuario} aviso={avisoLogin} />;
+  if (!usuario.modoDemo && (usuario.rol === "pendiente" || usuario.rol === "rechazado"))
+    return <PantallaPendiente usuario={usuario} onActualizar={setUsuario} onLogout={handleLogout} />;
+
+  const pendientesEquipo = puedePerm(usuario,"todo") ? usuarios.filter(u=>u.rol==="pendiente").length : 0;
 
   const estObj=key=>ESTADOS.find(e=>e.key===key)||ESTADOS[0];
   const totalAct=ordenes.length;
@@ -1549,6 +1600,12 @@ export default function App() {
   const renderDashboard=()=>{const rec=ordenes.filter(o=>o.estado!=="armado");return(
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(4,1fr)":"repeat(2,1fr)",gap:10}}>{[{label:"Órdenes Activas",value:totalAct,color:BRAND.accent},{label:"Para Cobro",value:ordenesCobro.length,color:BRAND.green},{label:"Total Cobrado",value:"$"+totCobradoGlobal.toLocaleString(),color:BRAND.purple},{label:"Terminadas",value:ordenesTerminadas.length,color:BRAND.blue}].map((m,i)=><div key={i} style={{...S.metric,border:"0.5px solid "+m.color+"25"}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{m.label}</div><div style={{fontSize:24,fontWeight:800,color:m.color}}>{m.value}</div></div>)}</div>
+      {pendientesEquipo>0&&(
+        <div onClick={()=>{setVista("equipo");setOrdenSel(null);}} style={{background:BRAND.blue+"12",border:"1px solid "+BRAND.blue+"55",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}>
+          <span style={{fontSize:13,color:BRAND.blue,fontWeight:700}}>🔔 {pendientesEquipo} solicitud{pendientesEquipo!==1?"es":""} para unirse a tu taller</span>
+          <span style={{fontSize:12,color:BRAND.blue,fontWeight:600,flexShrink:0}}>Revisar →</span>
+        </div>
+      )}
       {(()=>{ const vencidas=ordenes.filter(o=>(diasDesdeAlta(o)||0)>DIAS_ALERTA); if(!vencidas.length) return null; const n=vencidas.length; return (
         <div onClick={()=>{setVista("ordenes");setSubVista("activas");setOrdenSel(null);}} style={{background:"hsla(0, 85%, 50%, 0.08)",border:"1px solid hsla(0, 85%, 45%, 0.40)",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}>
           <span style={{fontSize:13,color:"hsl(0, 75%, 40%)",fontWeight:700}}>⚠ {n} orden{n!==1?"es":""} lleva{n!==1?"n":""} más de {DIAS_ALERTA} días desde su alta</span>
@@ -1688,41 +1745,85 @@ export default function App() {
   };
 
   const cambiarRol = async (uid, rol) => {
-    if (usuario.modoDemo) { alert("La gestión de roles requiere Supabase configurado."); return; }
+    if (usuario.modoDemo) { alert("La gestión de roles requiere Supabase configurado."); return false; }
+    const previo = usuarios;
     setUsuarios(us => us.map(u => u.id===uid ? {...u, rol} : u));
-    try { const r = await supaApi.actualizarRol(usuario.token, uid, rol); if (r && r.code && r.message) throw new Error(r.message); }
-    catch { alert("No se pudo actualizar el rol. Verifica tu conexión y los permisos."); }
+    try { await supaApi.actualizarRol(usuario.token, uid, rol); return true; }
+    catch (e) { setUsuarios(previo); alert("No se pudo actualizar el rol. " + e.message); return false; }
   };
 
   const renderEquipo = () => {
     const lista = usuario.modoDemo ? DEMOS.map(d=>({id:d.id,nombre:d.nombre,email:d.email,rol:d.rol})) : usuarios;
+    const pendientes = lista.filter(u=>u.rol==="pendiente");
+    const rechazados = lista.filter(u=>u.rol==="rechazado");
+    const miembros   = lista.filter(u=>u.rol!=="pendiente"&&u.rol!=="rechazado");
+    const avatar = (u, color) => <div style={{width:34,height:34,borderRadius:"50%",background:color+"22",border:"1.5px solid "+color+"44",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color,flexShrink:0}}>{(u.nombre||u.email||"?")[0].toUpperCase()}</div>;
+    const datos = u => <div style={{flex:1,minWidth:140}}><div style={{fontSize:13,fontWeight:600}}>{u.nombre||"(sin nombre)"}{u.id===usuario.id&&<span style={{fontSize:10,color:BRAND.muted,fontWeight:400}}> · tú</span>}</div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div></div>;
+    const aprobar  = u => cambiarRol(u.id, rolAprobar[u.id] || "asesor");
+    const rechazar = u => { if (!confirm(`¿Rechazar la solicitud de ${u.nombre || u.email}? No podrá ver nada del taller.`)) return; cambiarRol(u.id, "rechazado"); };
     return (
-      <div style={{maxWidth:640,display:"flex",flexDirection:"column",gap:14}}>
+      <div style={{maxWidth:680,display:"flex",flexDirection:"column",gap:14}}>
         <div style={S.card}>
           <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:8}}>Código del taller</div>
-          <div style={{fontSize:12,color:BRAND.muted,marginBottom:10}}>Compártelo con tus colaboradores para que se registren en {usuario.tallerNombre||"tu taller"}. Entrarán como Asesor y aquí podrás ajustar su rol.</div>
+          <div style={{fontSize:12,color:BRAND.muted,marginBottom:10}}>Compártelo con tus colaboradores para que se registren en {usuario.tallerNombre||"tu taller"}. Quedarán como <b>solicitud pendiente</b> hasta que los apruebes aquí. Trátalo como una contraseña: no lo publiques.</div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <div style={{flex:1,background:BRAND.bg,border:"0.5px solid "+BRAND.border,borderRadius:9,padding:"0.6rem 0.9rem",fontSize:18,fontWeight:800,letterSpacing:3,color:BRAND.accent,fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis"}}>{usuario.taller||"—"}</div>
             <button style={S.btn} onClick={()=>{ try{navigator.clipboard?.writeText(usuario.taller);}catch(_){} }}>Copiar</button>
           </div>
           {usuario.modoDemo&&<div style={{fontSize:11,color:"#F59E0B",marginTop:8}}>En modo demo el código es de ejemplo y la gestión de roles está deshabilitada.</div>}
         </div>
+
+        {pendientes.length>0&&(
+          <div style={{...S.card,border:"1.5px solid "+BRAND.blue+"55"}}>
+            <div style={{fontSize:13,fontWeight:700,color:BRAND.blue,marginBottom:4}}>🔔 Solicitudes pendientes ({pendientes.length})</div>
+            <div style={{fontSize:12,color:BRAND.muted,marginBottom:12}}>Se registraron con el código de tu taller y no ven nada hasta que las apruebes. Si no reconoces a alguien, recházalo.</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {pendientes.map(u=>(
+                <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:BRAND.bg,borderRadius:10,padding:"0.6rem 0.85rem"}}>
+                  {avatar(u, BRAND.blue)}{datos(u)}
+                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    <select value={rolAprobar[u.id]||"asesor"} onChange={e=>setRolAprobar(p=>({...p,[u.id]:e.target.value}))} title="Rol con el que entrará" style={{...S.select,width:130}}>
+                      {Object.keys(ROLES).map(k=><option key={k} value={k}>{ROLES[k].label}</option>)}
+                    </select>
+                    <button style={{...S.btnGreen,padding:"0.45rem 0.9rem"}} onClick={()=>aprobar(u)}>Aprobar</button>
+                    <button style={{...S.btnDanger,padding:"0.45rem 0.9rem"}} onClick={()=>rechazar(u)}>Rechazar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={S.card}>
-          <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:12}}>Usuarios del taller ({lista.length})</div>
+          <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:12}}>Usuarios del taller ({miembros.length})</div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {lista.map(u=>{ const r=ROLES[u.rol]||{label:u.rol,color:BRAND.muted}; const yo=u.id===usuario.id; return (
+            {miembros.map(u=>{ const r=ROLES[u.rol]||{label:u.rol,color:BRAND.muted}; const yo=u.id===usuario.id; return (
               <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,background:BRAND.bg,borderRadius:10,padding:"0.6rem 0.85rem"}}>
-                <div style={{width:34,height:34,borderRadius:"50%",background:r.color+"22",border:"1.5px solid "+r.color+"44",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:r.color,flexShrink:0}}>{(u.nombre||u.email||"?")[0].toUpperCase()}</div>
-                <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{u.nombre||"(sin nombre)"}{yo&&<span style={{fontSize:10,color:BRAND.muted,fontWeight:400}}> · tú</span>}</div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div></div>
-                <select value={u.rol} disabled={yo} onChange={e=>cambiarRol(u.id,e.target.value)} style={{...S.select,width:140,opacity:yo?0.5:1,cursor:yo?"not-allowed":"pointer"}}>
+                {avatar(u, r.color)}{datos(u)}
+                <select value={u.rol} disabled={yo} onChange={e=>{ const v=e.target.value; if(v==="rechazado"&&!confirm(`¿Quitarle el acceso a ${u.nombre||u.email}? Dejará de ver las órdenes del taller de inmediato.`)) return; cambiarRol(u.id,v); }} style={{...S.select,width:150,opacity:yo?0.5:1,cursor:yo?"not-allowed":"pointer"}}>
                   {Object.keys(ROLES).map(k=><option key={k} value={k}>{ROLES[k].label}</option>)}
+                  {!yo&&<option value="rechazado">⛔ Quitar acceso</option>}
                 </select>
               </div>
             );})}
-            {lista.length===0&&<div style={{textAlign:"center",color:BRAND.muted,fontSize:13,padding:"1.5rem 0"}}>Aún no hay otros usuarios. Comparte el código para que se unan.</div>}
+            {miembros.length===0&&<div style={{textAlign:"center",color:BRAND.muted,fontSize:13,padding:"1.5rem 0"}}>Aún no hay otros usuarios. Comparte el código para que se unan.</div>}
           </div>
           <div style={{fontSize:10,color:BRAND.muted,marginTop:10}}>No puedes cambiar tu propio rol para evitar quedarte sin acceso de administrador.</div>
         </div>
+
+        {rechazados.length>0&&(
+          <div style={S.card}>
+            <div style={{fontSize:12,fontWeight:700,color:BRAND.muted,marginBottom:8}}>Sin acceso: rechazados o dados de baja ({rechazados.length})</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {rechazados.map(u=>(
+                <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,opacity:0.75}}>
+                  {avatar(u, BRAND.muted)}{datos(u)}
+                  <button style={S.btnSm()} onClick={()=>cambiarRol(u.id,"pendiente")}>Reconsiderar</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -1736,7 +1837,7 @@ export default function App() {
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
       {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><img src={fotoAmpliada.url} alt="" style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
-      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} />
+      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} />
       <div style={{marginLeft:desktop?240:0,display:"flex",flexDirection:"column",minHeight:"100vh",minWidth:0}}>
         <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
           <div style={{padding:desktop?"0 1rem":"0 1rem 0 58px",minHeight:48,borderBottom:"0.5px solid "+BRAND.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:BRAND.card}}>
