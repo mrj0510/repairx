@@ -150,14 +150,15 @@ const supaApi = {
   },
   // Renombra la MISMA fila (antes se creaba una fila nueva y la vieja quedaba como duplicado)
   renombrarOrden: async (token, tallerId, idViejo, idNuevo) => {
-    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(idViejo), {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(idViejo) + "&select=version", {
       method:"PATCH",
-      headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=minimal" },
+      headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=representation" },
       body: JSON.stringify({ id: idNuevo }),
     });
     if (r.status === 409) throw new Error("DUPLICADO");
     if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo renombrar")); }
-    return true;
+    const d = await r.json().catch(() => []);
+    return Array.isArray(d) && d[0] ? d[0].version : null;
   },
   getUsuariosTaller: async (token, taller) => {
     const r = await fetch(SUPA_URL + "/rest/v1/perfiles?taller=eq." + encodeURIComponent(taller) + "&select=id,nombre,rol,email&order=nombre", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } });
@@ -171,14 +172,36 @@ const supaApi = {
     return data;
   },
   getOrdenes: async (token) => { const r = await fetch(SUPA_URL + "/rest/v1/ordenes?select=*&order=creado_en.desc", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } }); return r.json(); },
-  upsertOrden: async (token, orden) => {
-    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?on_conflict=taller_id,id", {
-      method:"POST",
-      headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"resolution=merge-duplicates,return=minimal" },
-      body:JSON.stringify(orden),
+  // Crea una orden nueva. Si ya existe, avisa (no la sobrescribe).
+  insertarOrden: async (token, fila) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?select=version,actualizado_en", {
+      method:"POST", headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=representation" }, body: JSON.stringify(fila),
     });
+    if (r.status === 409) { const e = new Error("La orden ya existe"); e.codigo = "EXISTE"; throw e; }
     if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo guardar")); }
-    return { ok:true };
+    const d = await r.json().catch(() => null);
+    return Array.isArray(d) ? d[0] : d;
+  },
+  // Guarda SOLO los campos que cambiaron, y solo si la orden sigue en la versión que conocemos.
+  // Devuelve null si otra persona la modificó antes (hay que fusionar).
+  actualizarOrden: async (token, tallerId, id, version, cambios) => {
+    const url = SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(id) + "&version=eq." + encodeURIComponent(version) + "&select=version,actualizado_en";
+    const r = await fetch(url, { method:"PATCH", headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=representation" }, body: JSON.stringify(cambios) });
+    if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo guardar")); }
+    const d = await r.json().catch(() => []);
+    return Array.isArray(d) && d.length ? d[0] : null;
+  },
+  leerOrden: async (token, tallerId, id) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(id) + "&select=*", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } });
+    if (!r.ok) throw new Error("Error " + r.status + " al leer la orden");
+    const d = await r.json();
+    return Array.isArray(d) && d.length ? d[0] : null;
+  },
+  // Órdenes que alguien modificó después de cierto momento
+  ordenesDesde: async (token, desdeISO) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/ordenes?select=*&actualizado_en=gt." + encodeURIComponent(desdeISO) + "&order=actualizado_en.asc", { headers:{ ...supaHeaders,"Authorization":"Bearer "+token } });
+    if (!r.ok) throw new Error("Error " + r.status);
+    return r.json();
   },
 };
 
@@ -394,6 +417,138 @@ const ordenToDB = (o, tallerID) => ({
   fotos:o.fotos||[], documentos:o.documentos||[], novedades:o.novedades||[], bitacora:o.bitacora||[],
   refacciones:o.refacciones||[],
 });
+
+// ─── Edición simultánea: guardar solo cambios + fusionar ─────────────────────
+// Cada orden tiene un número de versión en la base de datos. Al guardar se envían
+// SOLO los campos que cambiaron, y solo si la versión sigue siendo la que teníamos.
+// Si otra persona guardó antes, se descarga su versión y se combinan ambas:
+//   · fotos, documentos, novedades, refacciones: se suman los elementos que agregó
+//     cada quien y se respetan los borrados;
+//   · bitácora: se juntan las entradas nuevas de ambos;
+//   · campos simples: si solo uno lo cambió, gana ese cambio; si ambos cambiaron el
+//     mismo campo a valores distintos, se conserva el de la otra persona y se avisa.
+const CAMPOS_FIJOS  = ["id", "taller_id"];
+const LISTAS_CON_ID = ["fotos", "documentos", "novedades", "refacciones"];
+const ETIQUETAS_CAMPO = {
+  estado:"el estado", notas:"las notas", costo:"el costo", tecnico:"el técnico", cliente:"el cliente",
+  telefono:"el teléfono", vehiculo:"el vehículo", placa:"la placa", serie:"el VIN", siniestro:"el siniestro",
+  color:"el color", servicio:"el servicio", entrega:"la fecha de entrega", foto_principal:"la foto principal",
+  fotos:"una foto", documentos:"un documento", novedades:"una novedad", refacciones:"una refacción",
+  descuento:"el descuento", motivo_cierre:"el motivo de cierre", metodo_pago:"el método de pago",
+};
+
+// JSON con llaves ordenadas: la base devuelve las llaves en otro orden que el navegador
+const estable = v => {
+  if (Array.isArray(v)) return "[" + v.map(estable).join(",") + "]";
+  if (v && typeof v === "object") return "{" + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ":" + estable(v[k])).join(",") + "}";
+  return JSON.stringify(v === undefined ? null : v);
+};
+const igual = (a, b) => estable(a) === estable(b);
+const comoLista = v => Array.isArray(v) ? v : [];
+const claveItem = x => (x && x.id != null) ? "id:" + String(x.id) : "js:" + estable(x);
+
+const fusionarLista = (base, local, remota) => {
+  base = comoLista(base); local = comoLista(local); remota = comoLista(remota);
+  const B = new Map(base.map(x => [claveItem(x), x]));
+  const L = new Map(local.map(x => [claveItem(x), x]));
+  const R = new Map(remota.map(x => [claveItem(x), x]));
+  const lista = []; let conflicto = false;
+  for (const r of remota) {
+    const k = claveItem(r);
+    if (B.has(k) && !L.has(k)) {                       // yo lo borré…
+      if (!igual(r, B.get(k))) { lista.push(r); conflicto = true; }   // …pero el otro lo modificó: se conserva
+      continue;
+    }
+    if (B.has(k) && L.has(k)) {
+      const l = L.get(k), b = B.get(k);
+      if (igual(l, b) || igual(l, r)) lista.push(r);   // no lo toqué, o ambos igual
+      else if (igual(r, b)) lista.push(l);             // solo yo lo modifiqué
+      else { lista.push(r); conflicto = true; }        // ambos distinto: gana el otro
+      continue;
+    }
+    lista.push(r);                                     // lo agregó el otro
+  }
+  for (const l of local) {
+    const k = claveItem(l);
+    if (R.has(k)) continue;
+    if (!B.has(k)) lista.push(l);                                   // lo agregué yo
+    else if (!igual(l, B.get(k))) { lista.push(l); conflicto = true; } // el otro lo borró, pero yo lo modifiqué: se conserva
+  }
+  return { lista, conflicto };
+};
+
+// a − b contando repeticiones (dos entradas idénticas en la bitácora son dos eventos)
+const restarMultiset = (a, b) => {
+  const cuenta = new Map();
+  for (const x of b) { const k = estable(x); cuenta.set(k, (cuenta.get(k) || 0) + 1); }
+  return a.filter(x => { const k = estable(x); const n = cuenta.get(k) || 0; if (n > 0) { cuenta.set(k, n - 1); return false; } return true; });
+};
+const fusionarBitacora = (base, local, remota) => {
+  base = comoLista(base); local = comoLista(local); remota = comoLista(remota);
+  const mias = restarMultiset(local, base), suyas = restarMultiset(remota, base);
+  return remota.concat(restarMultiset(mias, suyas));   // sin duplicar si ya se guardaron
+};
+
+const fusionarOrden = (base, local, remota) => {
+  base = base || {};
+  const fila = { ...remota }; const conflictos = [];
+  for (const c of Object.keys(local)) {
+    if (CAMPOS_FIJOS.includes(c)) continue;
+    if (LISTAS_CON_ID.includes(c)) {
+      const { lista, conflicto } = fusionarLista(base[c], local[c], remota[c]);
+      fila[c] = lista; if (conflicto) conflictos.push(c);
+    } else if (c === "bitacora") {
+      fila[c] = fusionarBitacora(base[c], local[c], remota[c]);
+    } else {
+      const l = local[c], b = base[c], r = remota[c];
+      if (igual(l, b)) continue;                                   // no lo cambié: se queda lo del otro
+      if (igual(r, b) || igual(l, r)) { fila[c] = l; continue; }   // solo yo lo cambié
+      conflictos.push(c);                                          // ambos, distinto: se queda lo del otro
+    }
+  }
+  return { fila, conflictos };
+};
+
+const diferencias = (base, fila) => {
+  const cambios = {};
+  for (const c of Object.keys(fila)) {
+    if (CAMPOS_FIJOS.includes(c)) continue;
+    if (!igual(fila[c], base ? base[c] : undefined)) cambios[c] = fila[c];
+  }
+  return cambios;
+};
+
+// Guarda una orden enviando solo lo que cambió. Si otra persona guardó antes,
+// descarga su versión, fusiona y reintenta. Devuelve la nueva base y versión, y la
+// fila fusionada (para mostrarla) cuando hubo que combinar cambios.
+const sincronizarFila = async (token, filaLocal, entrada) => {
+  let base, version, fila = filaLocal, fusionada = null, conflictos = [];
+  if (!entrada) {
+    try {
+      const r = await supaApi.insertarOrden(token, filaLocal);
+      return { base: filaLocal, version: (r && r.version) || 1, actualizadoEn: r ? r.actualizado_en : null, fusionada: null, conflictos };
+    } catch (e) {
+      if (e.codigo !== "EXISTE") throw e;
+      base = {}; version = null;          // ya existía (p. ej. un reintento): se fusiona
+    }
+  } else { base = entrada.base; version = entrada.version; }
+  const baseOriginal = base;
+  for (let intento = 0; intento < 4; intento++) {
+    if (version !== null) {
+      const cambios = diferencias(base, fila);
+      if (!Object.keys(cambios).length) return { base: fila, version, actualizadoEn: null, fusionada, conflictos };
+      const r = await supaApi.actualizarOrden(token, filaLocal.taller_id, filaLocal.id, version, cambios);
+      if (r) return { base: fila, version: r.version, actualizadoEn: r.actualizado_en, fusionada, conflictos };
+    }
+    // Otra persona guardó antes: se descarga su versión y se combinan los cambios
+    const remotaRaw = await supaApi.leerOrden(token, filaLocal.taller_id, filaLocal.id);
+    if (!remotaRaw) { const e = new Error(`La orden ${filaLocal.id} ya no existe en el servidor (quizá fue renombrada). Recarga la página.`); e.codigo = "NO_EXISTE"; throw e; }
+    const remota = ordenToDB(dbToOrden(remotaRaw), filaLocal.taller_id);
+    const res = fusionarOrden(baseOriginal, filaLocal, remota);
+    base = remota; version = remotaRaw.version; fila = res.fila; fusionada = res.fila; conflictos = res.conflictos;
+  }
+  throw new Error(`Demasiados cambios simultáneos en ${filaLocal.id}; se reintentará.`);
+};
 
 function useDesktop(bp=900) {
   const [d, setD] = useState(typeof window!=="undefined" && window.innerWidth>=bp);
@@ -916,7 +1071,7 @@ function Novedades({ orden, ordenes, setOrdenes, setOrdenSel, S }) {
   );
 }
 
-function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usuario }) {
+function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usuario, onRenombrado }) {
   const [edit,setEdit]=useState(false); const [val,setVal]=useState(o.id); const ref=useRef();
   const [guardandoId,setGuardandoId]=useState(false);
   const ok=async()=>{
@@ -926,7 +1081,7 @@ function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usua
     if(ordenes.some(x=>x.id===nv)){ alert("Ya existe una orden con ese número."); return; }
     if(usuario&&!usuario.modoDemo){
       setGuardandoId(true);
-      try{ await supaApi.renombrarOrden(usuario.token, o.tallerId||usuario.taller, o.id, nv); }
+      try{ const version = await supaApi.renombrarOrden(usuario.token, o.tallerId||usuario.taller, o.id, nv); if (onRenombrado) onRenombrado(o.id, nv, version); }
       catch(e){ setGuardandoId(false); alert(e.message==="DUPLICADO"?"Ya existe una orden con ese número en tu taller (puede estar en Cobro, Terminadas o Historial).":"No se pudo renombrar la orden. "+e.message); return; }
       setGuardandoId(false);
     }
@@ -1168,7 +1323,7 @@ function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, 
   );
 }
 
-function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario }) {
+function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario , onRenombrado}) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
   return (
@@ -1176,7 +1331,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
       <div style={{padding:"0.75rem 1rem",background:BRAND.bg,borderBottom:"0.5px solid "+BRAND.border}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
           {o.fotoPrincipal?<img src={o.fotoPrincipal} alt="v" style={{width:36,height:28,objectFit:"cover",borderRadius:6,border:"0.5px solid "+BRAND.border,flexShrink:0}} />:<div style={{width:36,height:28,background:BRAND.card2,borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🚗</div>}
-          <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6}}><EditarId o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} fSize={14} puedeAdmin={puedeAdmin} usuario={usuario} /><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{o.cliente}</span></div><div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{o.vehiculo} - {o.placa}{o.telefono?" - "+o.telefono:""}</div></div>
+          <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6}}><EditarId o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} fSize={14} puedeAdmin={puedeAdmin} usuario={usuario} onRenombrado={onRenombrado} /><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{o.cliente}</span></div><div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{o.vehiculo} - {o.placa}{o.telefono?" - "+o.telefono:""}</div></div>
           <ContadorDias o={o} grande /><span style={{background:eAct.color+"22",color:eAct.color,border:"0.5px solid "+eAct.color+"44",borderRadius:20,padding:"3px 8px",fontSize:10,fontWeight:700,flexShrink:0}}>{eAct.label}</span>
         </div>
         <div style={{display:"flex",gap:2,marginBottom:8}}>{ESTADOS.map((es,i)=><div key={es.key} style={{flex:1}}><div style={{height:3,borderRadius:2,background:i<idx?BRAND.accent:i===idx?BRAND.accent+"66":BRAND.dimmed,marginBottom:2}} /><div style={{fontSize:7,color:i===idx?BRAND.accent:i<idx?BRAND.muted:BRAND.dimmed,textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{es.label.split(" ")[0]}</div></div>)}</div>
@@ -1336,6 +1491,7 @@ export default function App() {
   const [subiendo,setSubiendo]=useState("");
   const [cargando,setCargando]=useState(false);
   const [errorSync,setErrorSync]=useState("");
+  const [avisoSync,setAvisoSync]=useState("");   // avisos de sincronización (no son errores)
   const [usuarios,setUsuarios]=useState([]);
   const [rolAprobar,setRolAprobar]=useState({});   // rol elegido para cada solicitud pendiente
   const [modalCerrar,setModalCerrar]=useState(null);
@@ -1357,51 +1513,190 @@ export default function App() {
     supaApi.getUsuariosTaller(usuario.token, usuario.taller).then(d => { if(Array.isArray(d)) setUsuarios(d); }).catch(()=>{});
   }, [vista, usuario]);
 
-  const syncRef = useRef({});
+  // ─── Sincronización con el servidor (edición simultánea sin pérdidas) ───────
+  const syncRef = useRef({});      // id → { base: la orden tal como está en el servidor, version }
+  const enviadoRef = useRef({});   // id → último estado ya puesto en cola (evita guardar dos veces lo mismo)
+  const colaRef = useRef({});      // id → guardado en curso (uno a la vez por orden)
+  const cursorRef = useRef(null);  // actualizado_en más reciente recibido del servidor
   const cargadoRef = useRef(false);
+  const ultimoRefrescoRef = useRef(0);
+  const estadoRef = useRef({});
+  estadoRef.current = { ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial };
+  const ordenSelRef = useRef(null);
+  ordenSelRef.current = ordenSel;
+  // Cambios del servidor que ya se mandaron a pantalla pero React aún no redibuja.
+  // Mientras tanto, cualquier lectura para guardar los aplica encima (si no, un guardado
+  // leería la versión vieja y "borraría" lo que agregó otra persona). Se vacía tras cada render.
+  const pendienteRef = useRef({});
+  useEffect(() => { pendienteRef.current = {}; });
+
+  const LISTA_SETTERS = { activas: setOrdenes, cobro: setOrdenesCobro, cobradas: setOrdenesCobradas, terminadas: setOrdenesTerminadas, historial: setHistorial };
+  const NOMBRE_LISTA = { activas:"Activas", cobro:"Para cobro", cobradas:"Cobradas", terminadas:"Terminadas", historial:"Historial" };
+  const listaDe = o => o.fechaCierre ? "historial" : o.fechaTerminado ? "terminadas" : o.fechaPago ? "cobradas" : o.fechaEnvioCobro ? "cobro" : "activas";
+  const todasLasOrdenes = () => { const e = estadoRef.current; return [...(e.ordenes||[]), ...(e.ordenesCobro||[]), ...(e.ordenesCobradas||[]), ...(e.ordenesTerminadas||[]), ...(e.historial||[])]; };
+  const buscarOrden = id => todasLasOrdenes().find(o => o.id === id);
+  // La orden tal como la ve el usuario, incluyendo cambios del servidor aún no dibujados
+  const filaLocalDe = o => {
+    let fila = ordenToDB(o, usuario.taller);
+    (pendienteRef.current[o.id] || []).forEach(p => { fila = fusionarOrden(p.antes, fila, p.despues).fila; });
+    return fila;
+  };
+  const registrarPendiente = (id, antes, despues) => { (pendienteRef.current[id] = pendienteRef.current[id] || []).push({ antes, despues }); };
+  const avanzarCursor = ts => { if (ts && (!cursorRef.current || Date.parse(ts) > Date.parse(cursorRef.current))) cursorRef.current = ts; };
+
+  // Pone la versión nueva de una orden en la lista que le corresponde según sus fechas
+  const reemplazarOrden = (id, nueva) => {
+    const destino = listaDe(nueva);
+    Object.entries(LISTA_SETTERS).forEach(([clave, set]) => set(lista => {
+      const i = lista.findIndex(x => x.id === id);
+      if (clave === destino) { if (i >= 0) { const c = lista.slice(); c[i] = nueva; return c; } return [nueva, ...lista]; }
+      return i >= 0 ? lista.filter(x => x.id !== id) : lista;
+    }));
+    const sel = ordenSelRef.current;
+    if (sel && sel.id === id) {
+      if (destino === "activas") setOrdenSel(nueva);
+      else { setOrdenSel(null); setAvisoSync(`La orden ${id} fue movida a «${NOMBRE_LISTA[destino]}» por otra persona.`); }
+    }
+  };
+
+  // Muestra la versión fusionada sin perder lo que el usuario hizo mientras se guardaba
+  const aplicarFusion = (id, filaEnviada, filaFusionada) => {
+    const actual = buscarOrden(id);
+    let fila = filaFusionada;
+    if (actual) {
+      const filaActual = filaLocalDe(actual);
+      if (!igual(filaActual, filaEnviada)) fila = fusionarOrden(filaEnviada, filaActual, filaFusionada).fila;
+      registrarPendiente(id, filaActual, fila);
+    }
+    enviadoRef.current[id] = estable(filaFusionada);   // si el usuario siguió editando, se guardará en el siguiente ciclo
+    reemplazarOrden(id, dbToOrden(fila));
+  };
+
+  const guardarOrden = async id => {
+    const orden = buscarOrden(id);
+    if (!orden) return;                                  // ya no existe localmente (p. ej. renombrada)
+    const fila = filaLocalDe(orden);
+    const res = await sincronizarFila(usuario.token, fila, syncRef.current[id]);
+    syncRef.current[id] = { base: res.base, version: res.version };
+    avanzarCursor(res.actualizadoEn);
+    if (res.fusionada) {
+      aplicarFusion(id, fila, res.fusionada);
+      if (res.conflictos.length) {
+        const que = res.conflictos.map(c => ETIQUETAS_CAMPO[c] || c).join(", ");
+        setAvisoSync(`${id}: otra persona cambió ${que} al mismo tiempo. Se conservó su versión; revisa la orden.`);
+      }
+    }
+  };
+
+  // Un guardado a la vez por orden (si llega otro, espera su turno)
+  const encolar = (id, tarea) => {
+    const previa = colaRef.current[id] || Promise.resolve();
+    const actual = previa.catch(() => {}).then(tarea);
+    colaRef.current[id] = actual;
+    actual.catch(() => {}).finally(() => { if (colaRef.current[id] === actual) delete colaRef.current[id]; });
+    return actual;
+  };
+
+  const programarGuardado = o => {
+    const js = estable(filaLocalDe(o));
+    if (enviadoRef.current[o.id] === js) return;
+    enviadoRef.current[o.id] = js;
+    encolar(o.id, () => guardarOrden(o.id)).catch(e => {
+      console.error("Error al guardar la orden:", e);
+      delete enviadoRef.current[o.id];                   // se reintenta en el próximo cambio o en el refresco periódico
+      setErrorSync(e.codigo === "NO_EXISTE" ? e.message : `No se pudo guardar la orden ${o.id}. Verifica tu conexión; se reintentará automáticamente.`);
+    });
+  };
+
+  // Integra una orden que otra persona modificó (si aquí no hay cambios sin guardar)
+  const incorporarRemota = row => {
+    avanzarCursor(row.actualizado_en);
+    const id = row.id, entrada = syncRef.current[id];
+    if (entrada && (row.version || 1) <= entrada.version) return;           // ya la tenemos
+    if (colaRef.current[id]) return;                                         // se está guardando: la fusión lo resuelve
+    const actual = buscarOrden(id);
+    if (actual && !entrada) return;
+    if (actual && entrada && !igual(filaLocalDe(actual), entrada.base)) return;   // cambios locales pendientes
+    const remota = dbToOrden(row);
+    const fila = ordenToDB(remota, usuario.taller);
+    if (actual) registrarPendiente(id, filaLocalDe(actual), fila);
+    syncRef.current[id] = { base: fila, version: row.version || 1 };
+    enviadoRef.current[id] = estable(fila);
+    reemplazarOrden(id, remota);
+  };
+
+  const alRenombrar = (viejo, nuevo, version) => {
+    const e = syncRef.current[viejo];
+    if (e) {
+      const base = { ...e.base, id: nuevo };
+      syncRef.current[nuevo] = { base, version: version || e.version };
+      enviadoRef.current[nuevo] = estable(base);
+    }
+    delete syncRef.current[viejo]; delete enviadoRef.current[viejo];
+  };
+
+  // Solo recarga todo si cambia la cuenta, el taller o el rol (no en cada renovación del token)
+  const claveSesion = usuario && !usuario.modoDemo ? [usuario.id, usuario.taller, usuario.rol].join("|") : "";
 
   useEffect(() => {
-    if (!usuario || usuario.modoDemo) { cargadoRef.current = false; return; }
+    if (!claveSesion) { cargadoRef.current = false; return; }
     setCargando(true);
     supaApi.getOrdenes(usuario.token).then(rows => {
       if (!Array.isArray(rows)) { setCargando(false); return; }
-      const acts=[],cob=[],cobr=[],term=[],hist=[];
+      const listas = { activas:[], cobro:[], cobradas:[], terminadas:[], historial:[] };
+      const snap = {}, env = {}; let cursor = null;
       rows.forEach(r => {
         const o = dbToOrden(r);
-        if (r.fecha_cierre)          hist.push(o);
-        else if (r.fecha_terminado)  term.push(o);
-        else if (r.fecha_pago)       cobr.push(o);
-        else if (r.fecha_envio_cobro)cob.push(o);
-        else                         acts.push(o);
+        listas[listaDe(o)].push(o);
+        const fila = ordenToDB(o, usuario.taller);
+        snap[o.id] = { base: fila, version: r.version || 1 };
+        env[o.id] = estable(fila);
+        if (r.actualizado_en && (!cursor || Date.parse(r.actualizado_en) > Date.parse(cursor))) cursor = r.actualizado_en;
       });
-      setOrdenes(acts); setOrdenesCobro(cob); setOrdenesCobradas(cobr); setOrdenesTerminadas(term); setHistorial(hist);
-      const snap = {};
-      [...acts,...cob,...cobr,...term,...hist].forEach(o => { snap[o.id] = JSON.stringify(ordenToDB(o, usuario.taller)); });
-      syncRef.current = snap;
+      setOrdenes(listas.activas); setOrdenesCobro(listas.cobro); setOrdenesCobradas(listas.cobradas); setOrdenesTerminadas(listas.terminadas); setHistorial(listas.historial);
+      syncRef.current = snap; enviadoRef.current = env;
+      cursorRef.current = cursor || new Date(Date.now() - 60000).toISOString();
       cargadoRef.current = true;
       setCargando(false);
     }).catch(() => setCargando(false));
-  }, [usuario]);
+  }, [claveSesion]);
 
+  // Guarda lo que cambió (espera 0.8 s para agrupar teclazos)
   useEffect(() => {
     if (!usuario || usuario.modoDemo || !cargadoRef.current) return;
-    const t = setTimeout(() => {
-      [...ordenes,...ordenesCobro,...ordenesCobradas,...ordenesTerminadas,...historial].forEach(o => {
-        const row = ordenToDB(o, usuario.taller);
-        const js = JSON.stringify(row);
-        if (syncRef.current[o.id] !== js) {
-          syncRef.current[o.id] = js;
-          supaApi.upsertOrden(usuario.token, row)
-            .catch(e => {
-              console.error("Error al sincronizar orden:", e);
-              delete syncRef.current[o.id];
-              setErrorSync("No se pudo guardar la orden "+o.id+". Verifica tu conexión; se reintentará al siguiente cambio.");
-            });
-        }
-      });
-    }, 800);
+    const t = setTimeout(() => { todasLasOrdenes().forEach(programarGuardado); }, 800);
     return () => clearTimeout(t);
   }, [ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial, usuario]);
+
+  // Cada 45 s y al volver a la pestaña: reintenta guardados fallidos y trae lo que cambiaron otros
+  useEffect(() => {
+    if (!usuario || usuario.modoDemo) return;
+    let vivo = true;
+    const refrescar = async () => {
+      if (!cargadoRef.current || document.hidden) return;
+      if (Date.now() - ultimoRefrescoRef.current < 5000) return;
+      ultimoRefrescoRef.current = Date.now();
+      todasLasOrdenes().forEach(o => {
+        if (colaRef.current[o.id]) return;
+        const e = syncRef.current[o.id];
+        if (e && igual(filaLocalDe(o), e.base)) return;
+        programarGuardado(o);
+      });
+      const desde = new Date(Date.parse(cursorRef.current || new Date().toISOString()) - 10000).toISOString();
+      try {
+        const filas = await supaApi.ordenesDesde(usuario.token, desde);
+        if (vivo && Array.isArray(filas)) filas.forEach(incorporarRemota);
+      } catch (_) {}
+    };
+    const iv = setInterval(refrescar, 45000);
+    const alVolver = () => { if (!document.hidden) refrescar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("focus", alVolver);
+    return () => { vivo = false; clearInterval(iv); document.removeEventListener("visibilitychange", alVolver); window.removeEventListener("focus", alVolver); };
+  }, [usuario]);
+
+  // Los avisos informativos se ocultan solos
+  useEffect(() => { if (!avisoSync) return; const t = setTimeout(() => setAvisoSync(""), 10000); return () => clearTimeout(t); }, [avisoSync]);
 
   if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div><div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div></div></div>;
   if (recuperacion) return <NuevaPasswordScreen token={recuperacion.accessToken}
@@ -1625,7 +1920,7 @@ export default function App() {
       {subVista==="activas"&&(
         <div>
           {!ordenSel&&<div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}><input style={{...S.input,width:180}} placeholder="Buscar en activas..." value={busqueda} onChange={e=>setBusqueda(e.target.value)} /><select style={{...S.select,width:155}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)}><option value="todos">Todos los estados</option>{ESTADOS.map(e=><option key={e.key} value={e.key}>{e.label}</option>)}</select>{puedePerm(usuario,"crear_ordenes")&&<button style={S.btn} onClick={()=>setVista("nueva")}>+ Nueva Orden</button>}</div>}
-          {ordenSel?<OrdenExpandida o={ordenSel} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} tabDetalle={tabDetalle} setTabDetalle={setTabDetalle} avanzarEstado={avanzarEstado} setModalRetroceder={setModalRetroceder} setModalCerrar={setModalCerrar} setModalCobro={setModalCobro} setModalTerminar={setModalTerminar} fotoRef={fotoRef} docRef={docRef} docTipo={docTipo} setDocTipo={setDocTipo} docNombre={docNombre} setDocNombre={setDocNombre} agregarFotos={agregarFotos} eliminarFoto={eliminarFoto} agregarDoc={agregarDoc} eliminarDoc={eliminarDoc} setFotoAmpliada={setFotoAmpliada} usuario={usuario} />:(
+          {ordenSel?<OrdenExpandida onRenombrado={alRenombrar} o={ordenSel} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} tabDetalle={tabDetalle} setTabDetalle={setTabDetalle} avanzarEstado={avanzarEstado} setModalRetroceder={setModalRetroceder} setModalCerrar={setModalCerrar} setModalCobro={setModalCobro} setModalTerminar={setModalTerminar} fotoRef={fotoRef} docRef={docRef} docTipo={docTipo} setDocTipo={setDocTipo} docNombre={docNombre} setDocNombre={setDocNombre} agregarFotos={agregarFotos} eliminarFoto={eliminarFoto} agregarDoc={agregarDoc} eliminarDoc={eliminarDoc} setFotoAmpliada={setFotoAmpliada} usuario={usuario} />:(
             <div>
               <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(2,1fr)":"1fr",gap:10}}>{activasPagina.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>{setOrdenSel(o);setTabDetalle("info");}} />)}</div>
               {ordenesActivas.length===0&&<div style={{textAlign:"center",color:BRAND.muted,padding:"2rem",fontSize:13}}>No se encontraron órdenes</div>}
@@ -1833,6 +2128,7 @@ export default function App() {
   return (
     <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",minHeight:"100vh",width:"100%",background:BRAND.bg,color:BRAND.text}}>
       <ModalTerminar /><ModalCerrar /><ModalRetroceder /><ModalCobro /><ModalPago />
+      {avisoSync&&<div style={{position:"fixed",bottom:errorSync?76:16,left:"50%",transform:"translateX(-50%)",zIndex:961,background:"#1E3A8A",border:"0.5px solid #1E40AF",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000055"}}><span style={{fontSize:12,color:"#DBEAFE"}}>ℹ️ {avisoSync}</span><button onClick={()=>setAvisoSync("")} style={{background:"none",border:"none",color:"#DBEAFE",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
       {errorSync&&<div style={{position:"fixed",bottom:16,left:"50%",transform:"translateX(-50%)",zIndex:960,background:"#7F1D1D",border:"0.5px solid #991b1b",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000088"}}><span style={{fontSize:12,color:"#fca5a5"}}>⚠️ {errorSync}</span><button onClick={()=>setErrorSync("")} style={{background:"none",border:"none",color:"#fca5a5",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
