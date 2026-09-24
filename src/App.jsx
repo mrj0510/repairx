@@ -42,6 +42,7 @@ const ERRORES_AUTH = {
   over_email_send_rate_limit: "Se alcanzó el límite de correos por hora. Inténtalo más tarde.",
   signup_disabled:            "El registro de cuentas está deshabilitado.",
   email_address_invalid:      "El correo no es válido.",
+  same_password:              "La contraseña nueva debe ser distinta de la anterior.",
 };
 const traducirErrorAuth = (data, status) => {
   const codigo = (data && data.error_code) || "";
@@ -77,6 +78,32 @@ const supaAuth = {
       if (!r.ok) return { error: traducirErrorAuth(data, r.status) };
       if (data.access_token) return { session: data, user: data.user };
       return { session: null, user: data.user || data };
+    } catch { return { error: "No se pudo conectar con el servidor." }; }
+  },
+  // Envía el correo de recuperación. Supabase responde igual exista o no la cuenta
+  // (así nadie puede averiguar qué correos están registrados).
+  recuperar: async (email) => {
+    try {
+      const volverA = window.location.origin + "/";
+      const r = await fetch(SUPA_URL + "/auth/v1/recover?redirect_to=" + encodeURIComponent(volverA), {
+        method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY },
+        body: JSON.stringify({ email }),
+      });
+      if (!r.ok) { const data = await r.json().catch(() => ({})); return { error: traducirErrorAuth(data, r.status) }; }
+      return { ok: true };
+    } catch { return { error: "No se pudo conectar con el servidor." }; }
+  },
+  // Cambia la contraseña usando el token temporal que trae el enlace del correo
+  cambiarPassword: async (token, password) => {
+    try {
+      const r = await fetch(SUPA_URL + "/auth/v1/user", {
+        method:"PUT", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+token },
+        body: JSON.stringify({ password }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 401) return { error: "El enlace expiró. Solicita uno nuevo desde «¿Olvidaste tu contraseña?»." };
+      if (!r.ok) return { error: traducirErrorAuth(data, r.status) };
+      return { ok: true };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
   },
   signOut: async (token) => { try { await fetch(SUPA_URL + "/auth/v1/logout", { method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+token } }); } catch (_) {} },
@@ -344,6 +371,23 @@ function useDesktop(bp=900) {
 const SESION_KEY = "repairx_sesion";
 const guardarSesion = u => { try { localStorage.setItem(SESION_KEY, JSON.stringify(u)); } catch(_){} };
 const leerSesion   = () => { try { const s=localStorage.getItem(SESION_KEY); return s?JSON.parse(s):null; } catch(_){ return null; } };
+// Los enlaces de Supabase regresan a la app con los datos en la URL:
+//   #access_token=...&type=recovery          (enlace válido)
+//   #error=...&error_code=otp_expired        (enlace vencido o ya usado)
+const leerHashAuth = () => {
+  try {
+    const hash  = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+    const query = new URLSearchParams(window.location.search || "");
+    const get = k => hash.get(k) || query.get(k);
+    const accessToken = hash.get("access_token");
+    const error = get("error_description") || get("error");
+    if (!accessToken && !error) return null;
+    return { tipo: hash.get("type"), accessToken, error, errorCode: get("error_code") };
+  } catch { return null; }
+};
+// Quita tokens de la barra de direcciones y del historial del navegador
+const limpiarHash = () => { try { window.history.replaceState(null, "", window.location.pathname); } catch (_) {} };
+
 const borrarSesion = () => { try { localStorage.removeItem(SESION_KEY); } catch(_){} };
 
 const ROLES = {
@@ -493,12 +537,47 @@ function ReglasPassword({ pw }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
+function NuevaPasswordScreen({ token, onListo, onCancelar }) {
+  const [pw,setPw]=useState(""); const [pw2,setPw2]=useState("");
+  const [err,setErr]=useState(""); const [loading,setL]=useState(false);
+  const iStyle = { display:"block",width:"100%",boxSizing:"border-box",background:BRAND.bg,border:"0.5px solid "+BRAND.border,borderRadius:9,padding:"0.6rem 0.8rem",color:BRAND.text,fontSize:13,outline:"none",marginBottom:12 };
+  const lab = t => <label style={{fontSize:11,color:BRAND.muted,marginBottom:4,display:"block"}}>{t}</label>;
+  const guardar = async () => {
+    const ep = validarPassword(pw); if (ep) { setErr(ep); return; }
+    if (pw !== pw2) { setErr("Las contraseñas no coinciden."); return; }
+    setL(true); setErr("");
+    const { error } = await supaAuth.cambiarPassword(token, pw);
+    if (error) { setErr(error); setL(false); return; }
+    await supaAuth.signOut(token);   // revoca las sesiones en todos los dispositivos
+    onListo();
+  };
+  const onKey = e => { if (e.key === "Enter") guardar(); };
+  return (
+    <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
+      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
+        <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Crea tu nueva contraseña</div>
+        <div style={{fontSize:12,color:BRAND.muted,marginBottom:18}}>Al guardarla se cerrará la sesión en todos tus dispositivos.</div>
+        {lab("Nueva contraseña")}
+        <input style={{...iStyle,marginBottom:8}} type="password" autoComplete="new-password" autoFocus placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} />
+        <ReglasPassword pw={pw} />
+        {lab("Confirma la contraseña")}
+        <input style={iStyle} type="password" autoComplete="new-password" placeholder="••••••••" value={pw2} onChange={e=>setPw2(e.target.value)} onKeyDown={onKey} />
+        {pw2 && pw !== pw2 && <div style={{fontSize:11,color:"#EF4444",marginTop:-6,marginBottom:12}}>Las contraseñas no coinciden</div>}
+        {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
+        <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}} onClick={guardar} disabled={loading}>{loading?"Guardando...":"Guardar contraseña"}</button>
+        <button type="button" onClick={onCancelar} style={{width:"100%",marginTop:10,background:"none",border:"none",color:BRAND.muted,fontSize:12,cursor:"pointer"}}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin, aviso }) {
   const [modo,setModo]=useState("login");
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
   const [nombre,setNombre]=useState(""); const [tallerNombre,setTallerNombre]=useState(""); const [codigo,setCodigo]=useState("");
   const [logo,setLogo]=useState(null); const logoRef=useRef();
-  const [err,setErr]=useState(""); const [info,setInfo]=useState(""); const [loading,setL]=useState(false);
+  const [err,setErr]=useState(aviso&&aviso.tipo==="error"?aviso.texto:""); const [info,setInfo]=useState(aviso&&aviso.tipo==="info"?aviso.texto:""); const [loading,setL]=useState(false);
 
   const onLogo = async e => {
     const f=e.target.files[0]; if(!f){return;}
@@ -563,7 +642,17 @@ function LoginScreen({ onLogin }) {
     else { setInfo("¡Cuenta creada en "+taller.nombre+"! Si te pide confirmar el correo, hazlo y luego inicia sesión."); setModo("login"); setL(false); }
   };
 
-  const submit = () => modo==="login"?doLogin():modo==="crear"?doCrear():doUnir();
+  const doRecuperar = async () => {
+    const correo = em.trim().toLowerCase();
+    if (!correo || !correo.includes("@")) { setErr("Escribe el correo con el que te registraste."); return; }
+    setL(true); setErr(""); setInfo("");
+    const { error } = await supaAuth.recuperar(correo);
+    setL(false);
+    if (error) { setErr(error); return; }
+    setInfo("Si ese correo tiene una cuenta, te enviamos un enlace para crear una contraseña nueva. Revisa también la carpeta de spam. El enlace vence en 1 hora.");
+  };
+
+  const submit = () => modo==="recuperar"?doRecuperar():modo==="login"?doLogin():modo==="crear"?doCrear():doUnir();
   const onKey = e => { if (e.key==="Enter") submit(); };
   const iStyle = { display:"block",width:"100%",boxSizing:"border-box",background:BRAND.bg,border:"0.5px solid "+BRAND.border,borderRadius:9,padding:"0.6rem 0.8rem",color:BRAND.text,fontSize:13,outline:"none",marginBottom:12 };
   const lab = t => <label style={{fontSize:11,color:BRAND.muted,marginBottom:4,display:"block"}}>{t}</label>;
@@ -579,14 +668,14 @@ function LoginScreen({ onLogin }) {
         {!MODO_DEMO&&(
           <div style={{display:"flex",gap:4,marginBottom:18,background:BRAND.bg,borderRadius:10,padding:3}}>
             {[{k:"login",l:"Entrar"},{k:"crear",l:"Registrar taller"},{k:"unir",l:"Unirme"}].map(t=>(
-              <button key={t.k} onClick={()=>cambiarModo(t.k)} style={{flex:1,padding:"7px 4px",fontSize:11,fontWeight:600,borderRadius:8,border:"none",cursor:"pointer",background:modo===t.k?BRAND.accent:"transparent",color:modo===t.k?"#fff":BRAND.muted}}>{t.l}</button>
+              <button key={t.k} onClick={()=>cambiarModo(t.k)} style={{flex:1,padding:"7px 4px",fontSize:11,fontWeight:600,borderRadius:8,border:"none",cursor:"pointer",background:(modo===t.k||(t.k==="login"&&modo==="recuperar"))?BRAND.accent:"transparent",color:(modo===t.k||(t.k==="login"&&modo==="recuperar"))?"#fff":BRAND.muted}}>{t.l}</button>
             ))}
           </div>
         )}
-        <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>{modo==="login"?"Iniciar sesión":modo==="crear"?"Registrar un taller":"Unirme a un taller"}</div>
+        <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>{modo==="recuperar"?"Recuperar contraseña":modo==="login"?"Iniciar sesión":modo==="crear"?"Registrar un taller":"Unirme a un taller"}</div>
         <div style={{fontSize:12,color:BRAND.muted,marginBottom:18}}>
           {MODO_DEMO?<span style={{color:"#F59E0B"}}>⚠️ Modo demo — configura Supabase para producción</span>
-            :modo==="login"?"Ingresa con tu cuenta"
+            :modo==="recuperar"?"Te enviaremos un enlace a tu correo para crear una contraseña nueva":modo==="login"?"Ingresa con tu cuenta"
             :modo==="crear"?"Crea tu taller; serás el administrador"
             :"Pide el código a tu administrador"}
         </div>
@@ -607,14 +696,18 @@ function LoginScreen({ onLogin }) {
         {(modo==="crear"||modo==="unir")&&<>{lab("Tu nombre")}<input style={iStyle} placeholder="Nombre y apellido" value={nombre} onChange={e=>setNombre(e.target.value)} onKeyDown={onKey} /></>}
         {lab("Correo electrónico")}
         <input style={iStyle} type="email" placeholder="tu@taller.com" value={em} onChange={e=>setEm(e.target.value)} onKeyDown={onKey} autoComplete="email" />
+        {modo!=="recuperar"&&<>
         {lab("Contraseña")}
-        <input style={{...iStyle,marginBottom:modo==="login"?18:8}} type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} autoComplete={modo==="login"?"current-password":"new-password"} />
+        <input style={{...iStyle,marginBottom:modo==="login"?(MODO_DEMO?18:6):8}} type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} autoComplete={modo==="login"?"current-password":"new-password"} />
+        {modo==="login"&&!MODO_DEMO&&<div style={{textAlign:"right",marginBottom:14}}><button type="button" onClick={()=>cambiarModo("recuperar")} style={{background:"none",border:"none",color:BRAND.accent,fontSize:12,fontWeight:600,cursor:"pointer",padding:0}}>¿Olvidaste tu contraseña?</button></div>}
         {modo!=="login"&&<ReglasPassword pw={pw} />}
+        </>}
         {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
         {info&&<div style={{background:BRAND.green+"22",border:"0.5px solid "+BRAND.green+"44",borderRadius:8,padding:"8px 12px",fontSize:12,color:BRAND.green,marginBottom:14}}>{info}</div>}
         <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}} onClick={submit} disabled={loading}>
-          {loading?"Procesando...":modo==="login"?"Entrar":modo==="crear"?"Crear taller":"Unirme"}
+          {loading?"Procesando...":modo==="recuperar"?"Enviar enlace":modo==="login"?"Entrar":modo==="crear"?"Crear taller":"Unirme"}
         </button>
+        {modo==="recuperar"&&<button type="button" onClick={()=>cambiarModo("login")} style={{width:"100%",marginTop:10,background:"none",border:"none",color:BRAND.muted,fontSize:12,cursor:"pointer"}}>← Volver a iniciar sesión</button>}
       </div>
       {MODO_DEMO&&(
         <div style={{marginTop:24,width:"100%",maxWidth:380}}>
@@ -1089,8 +1182,25 @@ export default function App() {
   const desktop = useDesktop();
   const [usuario, setUsuario] = useState(null);
   const [iniciando, setIniciando] = useState(true);
+  const [recuperacion, setRecuperacion] = useState(null);   // { accessToken } cuando se abre un enlace de recuperación
+  const [avisoLogin, setAvisoLogin] = useState(null);       // { tipo: 'info'|'error', texto }
 
   useEffect(() => {
+    // ¿Venimos de un enlace del correo (recuperar contraseña / confirmar cuenta)?
+    const h = leerHashAuth();
+    if (h) {
+      limpiarHash();   // el token no debe quedarse en la URL ni en el historial
+      if (h.error) {
+        const vencido = /expired|invalid/i.test(h.error + " " + (h.errorCode || ""));
+        setAvisoLogin({ tipo:"error", texto: vencido ? "El enlace expiró o ya se usó. Solicita uno nuevo desde «¿Olvidaste tu contraseña?»." : "No se pudo validar el enlace: " + h.error });
+      } else if (h.tipo === "recovery" && h.accessToken) {
+        setRecuperacion({ accessToken: h.accessToken });
+        setIniciando(false);
+        return;
+      } else if (h.tipo === "signup") {
+        setAvisoLogin({ tipo:"info", texto:"Correo confirmado. Ya puedes iniciar sesión." });
+      }
+    }
     const u = leerSesion();
     if (!u) { setIniciando(false); return; }
     if (u.modoDemo) { setUsuario(u); setIniciando(false); return; }
@@ -1204,7 +1314,10 @@ export default function App() {
   }, [ordenes, ordenesCobro, ordenesCobradas, ordenesTerminadas, historial, usuario]);
 
   if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div><div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div></div></div>;
-  if (!usuario) return <LoginScreen onLogin={setUsuario} />;
+  if (recuperacion) return <NuevaPasswordScreen token={recuperacion.accessToken}
+    onListo={()=>{ borrarSesion(); setUsuario(null); setRecuperacion(null); setAvisoLogin({ tipo:"info", texto:"Contraseña actualizada. Inicia sesión con tu nueva contraseña." }); }}
+    onCancelar={()=>setRecuperacion(null)} />;
+  if (!usuario) return <LoginScreen key={avisoLogin ? avisoLogin.texto : "login"} onLogin={setUsuario} aviso={avisoLogin} />;
 
   const estObj=key=>ESTADOS.find(e=>e.key===key)||ESTADOS[0];
   const totalAct=ordenes.length;
