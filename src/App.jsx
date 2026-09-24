@@ -18,6 +18,43 @@ const supaHeaders = {
   "Authorization": "Bearer " + SUPA_KEY,
 };
 
+// ─── Reglas de contraseña (deben coincidir con Supabase → Auth → Email) ─────────
+// Supabase: Minimum length = 8 · Requirements = "Lowercase, uppercase letters and digits"
+const REGLAS_PASSWORD = "Mínimo 8 caracteres, con mayúscula, minúscula y número.";
+const validarPassword = pw => {
+  if (pw.length < 8)       return "La contraseña debe tener al menos 8 caracteres.";
+  if (!/[a-z]/.test(pw))   return "La contraseña debe incluir al menos una letra minúscula.";
+  if (!/[A-Z]/.test(pw))   return "La contraseña debe incluir al menos una letra mayúscula.";
+  if (!/[0-9]/.test(pw))   return "La contraseña debe incluir al menos un número.";
+  return "";
+};
+
+// ─── Errores de Supabase Auth en español ──────────────────────────────────────
+// Supabase responde en dos formatos: el clásico {error, error_description} y el
+// nuevo {code, error_code, msg}. Se aceptan ambos.
+const ERRORES_AUTH = {
+  invalid_credentials:        "Correo o contraseña incorrectos.",
+  weak_password:              "La contraseña no cumple los requisitos. " + REGLAS_PASSWORD,
+  user_already_exists:        "Ya existe una cuenta con ese correo. Inicia sesión.",
+  email_exists:               "Ya existe una cuenta con ese correo. Inicia sesión.",
+  email_not_confirmed:        "Confirma tu correo antes de iniciar sesión.",
+  over_request_rate_limit:    "Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
+  over_email_send_rate_limit: "Se alcanzó el límite de correos por hora. Inténtalo más tarde.",
+  signup_disabled:            "El registro de cuentas está deshabilitado.",
+  email_address_invalid:      "El correo no es válido.",
+};
+const traducirErrorAuth = (data, status) => {
+  const codigo = (data && data.error_code) || "";
+  if (ERRORES_AUTH[codigo]) return ERRORES_AUTH[codigo];
+  const txt = String((data && (data.error_description || data.msg || data.message || data.error)) || "");
+  if (/invalid login credentials/i.test(txt))               return ERRORES_AUTH.invalid_credentials;
+  if (/already (been )?registered|already exists/i.test(txt)) return ERRORES_AUTH.user_already_exists;
+  if (/email not confirmed/i.test(txt))                     return ERRORES_AUTH.email_not_confirmed;
+  if (status === 429 || /rate limit/i.test(txt))            return ERRORES_AUTH.over_request_rate_limit;
+  if (/password/i.test(txt) && /(at least|should|weak|contain|characters)/i.test(txt)) return ERRORES_AUTH.weak_password;
+  return txt || "No se pudo completar la operación. Inténtalo de nuevo.";
+};
+
 const supaAuth = {
   signIn: async (email, password) => {
     try {
@@ -25,8 +62,8 @@ const supaAuth = {
         method: "POST", headers: { "Content-Type": "application/json", "apikey": SUPA_KEY },
         body: JSON.stringify({ email, password }),
       });
-      const data = await r.json();
-      if (data.error || data.error_description) return { error: data.error_description || data.error || "Credenciales incorrectas" };
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.access_token) return { error: traducirErrorAuth(data, r.status) };
       return { session: data, user: data.user };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
   },
@@ -36,8 +73,8 @@ const supaAuth = {
         method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY },
         body: JSON.stringify({ email, password, data: metadata }),
       });
-      const data = await r.json();
-      if (data.error || data.error_description || data.msg) return { error: data.error_description || data.error || data.msg || "No se pudo registrar" };
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: traducirErrorAuth(data, r.status) };
       if (data.access_token) return { session: data, user: data.user };
       return { session: null, user: data.user || data };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
@@ -438,6 +475,24 @@ const mkS = () => ({
 });
 
 // ─── Login / Registro ─────────────────────────────────────────────────────────
+function ReglasPassword({ pw }) {
+  const reglas = [
+    { ok: pw.length >= 8,   t: "8+ caracteres" },
+    { ok: /[A-Z]/.test(pw), t: "Mayúscula" },
+    { ok: /[a-z]/.test(pw), t: "Minúscula" },
+    { ok: /[0-9]/.test(pw), t: "Número" },
+  ];
+  return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16}}>
+      {reglas.map(r => (
+        <span key={r.t} style={{fontSize:11,padding:"2px 9px",borderRadius:20,fontWeight:600,background:r.ok?BRAND.green+"1A":BRAND.bg,color:r.ok?BRAND.green:BRAND.muted,border:"1px solid "+(r.ok?BRAND.green+"55":BRAND.border)}}>
+          {r.ok ? "✓" : "○"} {r.t}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin }) {
   const [modo,setModo]=useState("login");
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
@@ -488,7 +543,7 @@ function LoginScreen({ onLogin }) {
 
   const doCrear = async () => {
     if(!tallerNombre.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
-    if(pw.length<6){setErr("La contraseña debe tener al menos 6 caracteres.");return;}
+    { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
     setL(true);setErr("");setInfo("");
     const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"", rol:"admin" });
     if(error){setErr(error);setL(false);return;}
@@ -498,7 +553,7 @@ function LoginScreen({ onLogin }) {
 
   const doUnir = async () => {
     if(!codigo.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
-    if(pw.length<6){setErr("La contraseña debe tener al menos 6 caracteres.");return;}
+    { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
     setL(true);setErr("");setInfo("");
     const taller = await supaApi.verificarTaller(codigo.trim().toUpperCase());
     if(!taller){ setErr("El código de taller no existe. Verifícalo con tu administrador."); setL(false); return; }
@@ -553,7 +608,8 @@ function LoginScreen({ onLogin }) {
         {lab("Correo electrónico")}
         <input style={iStyle} type="email" placeholder="tu@taller.com" value={em} onChange={e=>setEm(e.target.value)} onKeyDown={onKey} autoComplete="email" />
         {lab("Contraseña")}
-        <input style={{...iStyle,marginBottom:18}} type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} autoComplete={modo==="login"?"current-password":"new-password"} />
+        <input style={{...iStyle,marginBottom:modo==="login"?18:8}} type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={onKey} autoComplete={modo==="login"?"current-password":"new-password"} />
+        {modo!=="login"&&<ReglasPassword pw={pw} />}
         {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
         {info&&<div style={{background:BRAND.green+"22",border:"0.5px solid "+BRAND.green+"44",borderRadius:8,padding:"8px 12px",fontSize:12,color:BRAND.green,marginBottom:14}}>{info}</div>}
         <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}} onClick={submit} disabled={loading}>
