@@ -6,6 +6,24 @@ const SUPA_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const MODO_DEMO = !SUPA_URL || SUPA_URL.includes("TU_PROJECT_ID");
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Identidad: fuente Archivo (alojada en /fonts, licencia SIL OFL) y favicon ─
+const FUENTE_APP = '"Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+if (typeof document !== "undefined" && !document.getElementById("identidad-repairx")) {
+  const estilo = document.createElement("style");
+  estilo.id = "identidad-repairx";
+  estilo.textContent =
+    '@font-face{font-family:"Archivo";src:url("/fonts/archivo-variable.woff2") format("woff2");font-weight:100 900;font-stretch:62% 125%;font-style:normal;font-display:swap}' +
+    "body{font-family:" + FUENTE_APP + "}button,input,select,textarea{font-family:inherit}";
+  document.head.appendChild(estilo);
+  let icono = document.querySelector('link[rel="icon"]');
+  if (!icono) { icono = document.createElement("link"); icono.rel = "icon"; document.head.appendChild(icono); }
+  icono.type = "image/svg+xml"; icono.href = "/favicon.svg";
+}
+
+function LogoRX({ alto = 20, centrado = false }) {
+  return <img src="/img/logo-repairx.svg" alt="RepairX" style={{ height: alto, width: "auto", display: "block", margin: centrado ? "0 auto" : 0 }} />;
+}
+
 const BRAND = {
   accent:"#FF5C35", accentB:"#FF8A65", green:"#00A37A", blue:"#2563EB",
   purple:"#7C3AED", bg:"#F4F5F7", card:"#FFFFFF", card2:"#FFFFFF",
@@ -399,6 +417,7 @@ const dbToOrden = row => ({
   fotos:Array.isArray(row.fotos)?row.fotos:[], documentos:Array.isArray(row.documentos)?row.documentos:[],
   novedades:Array.isArray(row.novedades)?row.novedades:[], bitacora:Array.isArray(row.bitacora)?row.bitacora:[],
   refacciones:Array.isArray(row.refacciones)?row.refacciones:[],
+  enTransito:!!row.en_transito, fechaTransito:row.fecha_transito||"", llegada:row.llegada||"",
 });
 
 const ordenToDB = (o, tallerID) => ({
@@ -416,6 +435,7 @@ const ordenToDB = (o, tallerID) => ({
   descuento:o.descuento||0, notas_cobro:o.notasCobro||null, fecha_pago:o.fechaPago||null, metodo_pago:o.metodoPago||null, referencia_pago:o.referenciaPago||null,
   fotos:o.fotos||[], documentos:o.documentos||[], novedades:o.novedades||[], bitacora:o.bitacora||[],
   refacciones:o.refacciones||[],
+  en_transito:!!o.enTransito, fecha_transito:o.fechaTransito||null, llegada:o.llegada||null,
 });
 
 // ─── Edición simultánea: guardar solo cambios + fusionar ─────────────────────
@@ -430,6 +450,7 @@ const ordenToDB = (o, tallerID) => ({
 const CAMPOS_FIJOS  = ["id", "taller_id"];
 const LISTAS_CON_ID = ["fotos", "documentos", "novedades", "refacciones"];
 const ETIQUETAS_CAMPO = {
+  en_transito:"la ubicación (piso o tránsito)", llegada:"cómo llegó la unidad", fecha_transito:"la fecha de tránsito", fecha_reingreso:"la fecha de reingreso",
   estado:"el estado", notas:"las notas", costo:"el costo", tecnico:"el técnico", cliente:"el cliente",
   telefono:"el teléfono", vehiculo:"el vehículo", placa:"la placa", serie:"el VIN", siniestro:"el siniestro",
   color:"el color", servicio:"el servicio", entrega:"la fecha de entrega", foto_principal:"la foto principal",
@@ -625,9 +646,17 @@ const hoy   = () => new Date().toISOString().split("T")[0];
 const dDias = f => Math.max(0, Math.floor((Date.now()-new Date(f).getTime())/86400000));
 const cDias = f => { if(!f)return 0; const d=new Date(f); if(isNaN(d))return 0; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); };
 
-// CAMBIO 2: cálculo correcto de "Días en taller".
 // ─── Contador de días desde el alta ───────────────────────────────────────────
 const DIAS_ALERTA = 20;   // a partir de aquí la orden se marca en rojo
+
+// Orden de las listas por fecha de alta; empata por número de folio
+const fechaAlta = o => (o && (o.fecha || o.fechaPrimerIngreso)) || "";
+const numFolio = o => { const m = /(\d+)$/.exec((o && o.id) || ""); return m ? parseInt(m[1], 10) : 0; };
+const ordenarPorAlta = (lista, sentido) => lista.slice().sort((a, b) => {
+  const c = fechaAlta(a).localeCompare(fechaAlta(b)) || (numFolio(a) - numFolio(b));
+  return sentido === "antiguas" ? c : -c;
+});
+const diasEnTransito = o => (o && o.enTransito && o.fechaTransito) ? difDias(o.fechaTransito, hoyLocal()) : null;   // días que la unidad lleva fuera del taller esperando piezas
 
 // Diferencia en días entre dos fechas "YYYY-MM-DD", sin líos de zona horaria
 const difDias = (desde, hasta) => {
@@ -665,6 +694,7 @@ const colorDias = d => {
 // Al lanzar, pon aquí la URL de la app y el botón se activa solo.
 const PERITO_VALUADOR_URL = "";
 
+// Días en taller: desde el ingreso (o el último reingreso) hasta la entrega
 const diasEnTaller = o => {
   const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
   if (!ini) return 0;
@@ -742,7 +772,7 @@ function NuevaPasswordScreen({ token, onListo, onCancelar }) {
   const onKey = e => { if (e.key === "Enter") guardar(); };
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
-      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><LogoRX alto={30} centrado /></div>
       <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
         <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Crea tu nueva contraseña</div>
         <div style={{fontSize:12,color:BRAND.muted,marginBottom:18}}>Al guardarla se cerrará la sesión en todos tus dispositivos.</div>
@@ -779,7 +809,7 @@ function PantallaPendiente({ usuario, onActualizar, onLogout }) {
   };
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
-      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+      <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><LogoRX alto={30} centrado /></div>
       <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)",textAlign:"center"}}>
         <div style={{fontSize:40,marginBottom:10}}>{rechazado ? "⛔" : "⏳"}</div>
         <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>{rechazado ? "Solicitud no aprobada" : "Solicitud en espera"}</div>
@@ -885,7 +915,7 @@ function LoginScreen({ onLogin, aviso }) {
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
       <div style={{textAlign:"center",marginBottom:28}}>
-        <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:6}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+        <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:6}}><LogoRX alto={30} centrado /></div>
         <div style={{fontSize:12,color:BRAND.muted,letterSpacing:1,textTransform:"uppercase"}}>Gestión inteligente de taller</div>
       </div>
       <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
@@ -996,7 +1026,7 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
     <div style={{position:"fixed",top:0,left:0,height:"100%",width:240,background:BRAND.card,borderRight:"0.5px solid "+BRAND.border,zIndex:201,display:"flex",flexDirection:"column",transform:desktop?"none":(open?"translateX(0)":"translateX(-100%)"),transition:desktop?"none":"transform 0.25s ease",boxShadow:(!desktop&&open)?"6px 0 32px #00000099":"none"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"1rem 1.25rem",borderBottom:"0.5px solid "+BRAND.border}}>
         <div>
-          <div style={{fontSize:18,fontWeight:900,letterSpacing:2}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div>
+          <div style={{fontSize:18,fontWeight:900,letterSpacing:2}}><LogoRX alto={17} /></div>
           <div style={{fontSize:9,color:BRAND.muted,letterSpacing:1,textTransform:"uppercase",marginTop:1}}>Gestión inteligente</div>
         </div>
         {!desktop&&<button onClick={()=>setOpen(false)} style={{background:"none",border:"none",color:BRAND.muted,cursor:"pointer",fontSize:20}}>✕</button>}
@@ -1189,7 +1219,7 @@ function ExportarExcel({ ordenes, S }) {
   const pV=v=>{const p=v.trim().split(" ");const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
   const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||o.fechaPromesaEntrega;if(!b)return"";if(!f)return cDias(b).toString();return Math.max(0,Math.floor((new Date(f)-new Date(b))/86400000)).toString();};
   const COLS=[
-    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:()=>""},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>o.fechaPromesaEntrega||""},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},
+    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:()=>""},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>o.fechaPromesaEntrega||""},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
   ];
   const filt=fuente==="todas"?ordenes:fuente==="activas"?ordenes.filter(o=>!o.fechaCierre&&!o.fechaPago&&!o.fechaTerminado):fuente==="cobradas"?ordenes.filter(o=>!!o.fechaPago):fuente==="terminadas"?ordenes.filter(o=>!!o.fechaTerminado):ordenes.filter(o=>!!o.fechaCierre);
   const esc=v=>{const s=String(v).replace(/\t/g," ");return(s.includes(",")||s.includes('"')||s.includes("\n"))?'"'+s.replace(/"/g,'""')+'"':s;};
@@ -1326,6 +1356,14 @@ function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, 
 function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario , onRenombrado}) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
+  const cambiarUbicacion = aTransito => {
+    if (aTransito && o.llegada === "grua" && !confirm("Esta unidad llegó en grúa. ¿Confirmas que puede circular para mandarla a tránsito?")) return;
+    if (!aTransito && !confirm("¿Registrar que la unidad regresó al taller? Se guardará hoy como fecha de reingreso.")) return;
+    const cambios = aTransito ? { enTransito: true, fechaTransito: hoyLocal() } : { enTransito: false, fechaReingreso: hoyLocal() };
+    const entrada = { accion: aTransito ? "Unidad enviada a tránsito en espera de piezas" : "Reingreso de la unidad al taller", usuario: usuario.nombre, fecha: hoy() };
+    const upd = ordenes.map(x => x.id === o.id ? { ...x, ...cambios, bitacora: [...(x.bitacora || []), entrada] } : x);
+    setOrdenes(upd); setOrdenSel(upd.find(x => x.id === o.id));
+  };
   return (
     <div style={{background:BRAND.card,borderRadius:14,border:"0.5px solid "+BRAND.border,overflow:"hidden"}}>
       <div style={{padding:"0.75rem 1rem",background:BRAND.bg,borderBottom:"0.5px solid "+BRAND.border}}>
@@ -1345,10 +1383,21 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
       <div style={{padding:"1rem"}}>
         {tabDetalle==="info"&&(
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {(()=>{ const dT=diasEnTransito(o); return (
+              <div style={{background:o.enTransito?BRAND.blue+"0D":BRAND.bg,border:"1px solid "+(o.enTransito?BRAND.blue+"44":BRAND.border),borderRadius:10,padding:"0.75rem 0.85rem",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+                <div>
+                  <div style={{fontSize:11,color:BRAND.muted}}>Ubicación de la unidad</div>
+                  <div style={{fontSize:14,fontWeight:700,color:o.enTransito?BRAND.blue:BRAND.text}}>{o.enTransito?`🚗 En tránsito${dT!==null?` · ${dT} día${dT!==1?"s":""}`:""}`:"🔧 En piso"}</div>
+                  {o.enTransito&&<div style={{fontSize:11,color:BRAND.muted}}>Esperando piezas fuera del taller{o.fechaTransito?` desde el ${o.fechaTransito}`:""}</div>}
+                </div>
+                {puedeEdit&&(o.enTransito
+                  ?<button style={{...S.btnSm(BRAND.green),padding:"7px 12px",fontSize:12}} onClick={()=>cambiarUbicacion(false)}>Registrar reingreso</button>
+                  :<button style={{...S.btnSm(BRAND.blue),padding:"7px 12px",fontSize:12}} onClick={()=>cambiarUbicacion(true)}>Mandar a tránsito</button>)}
+              </div>); })()}
             <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
               <div style={{fontSize:11,color:BRAND.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Vehículo</div>
               <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>{o.vehiculo}</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px"}}>{[{l:"Placa",v:o.placa},{l:"Color",v:o.color},{l:"Técnico",v:o.tecnico},{l:"Servicio",v:o.servicio},{l:"Ingreso",v:o.fecha},{l:"Entrega",v:o.entrega}].map(({l,v})=><div key={l}><div style={{fontSize:10,color:BRAND.muted}}>{l}</div><div style={{fontSize:12,fontWeight:500}}>{v||"—"}</div></div>)}</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px"}}>{[{l:"Placa",v:o.placa},{l:"Color",v:o.color},{l:"Técnico",v:o.tecnico},{l:"Servicio",v:o.servicio},{l:"Ingreso",v:o.fecha},{l:"Entrega",v:o.entrega},{l:"Llegó",v:o.llegada==="grua"?"🚛 En grúa":o.llegada==="circulando"?"🚗 Circulando":""}].map(({l,v})=><div key={l}><div style={{fontSize:10,color:BRAND.muted}}>{l}</div><div style={{fontSize:12,fontWeight:500}}>{v||"—"}</div></div>)}</div>
               {o.serie&&<div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid "+BRAND.border}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:2}}>No. de Serie (VIN)</div><div style={{fontSize:11,fontFamily:"monospace",letterSpacing:1,color:BRAND.accent}}>{o.serie}</div></div>}
               {o.siniestro&&<div style={{marginTop:8}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:2}}>No. de Siniestro</div><div style={{fontSize:12,color:BRAND.blue,fontWeight:600}}>{o.siniestro}</div></div>}
               {o.notas&&<div style={{marginTop:8,background:BRAND.card2,borderRadius:7,padding:"7px 10px",fontSize:12,color:BRAND.muted,fontStyle:"italic"}}>{o.notas}</div>}
@@ -1407,7 +1456,7 @@ function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
         <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:BRAND.accent}}>{o.id}</span><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.cliente}</span></div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.vehiculo}</div></div>
         {badge?<span style={{flexShrink:0,background:BRAND.muted+"22",color:BRAND.muted,borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:600}}>{badge}</span>:<span style={{flexShrink:0,background:e.color+"18",color:e.color,border:"0.5px solid "+e.color+"44",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:500}}>{e.label}</span>}
       </div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{(o.refacciones||[]).length>0&&<span style={{fontSize:10,background:BRAND.bg,color:(o.refacciones.every(r=>r.recibida)?BRAND.green:BRAND.muted),borderRadius:5,padding:"2px 7px",fontWeight:600}}>🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{o.enTransito&&(()=>{ const dT=diasEnTransito(o); return <span style={{fontSize:10,background:BRAND.blue+"12",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"44",borderRadius:5,padding:"2px 7px",fontWeight:600}}>🚗 Tránsito{dT!==null?` · ${dT} d`:""}</span>; })()}{o.llegada==="grua"&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>🚛 Grúa</span>}{(o.refacciones||[]).length>0&&<span style={{fontSize:10,background:BRAND.bg,color:(o.refacciones.every(r=>r.recibida)?BRAND.green:BRAND.muted),borderRadius:5,padding:"2px 7px",fontWeight:600}}>🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
       <div style={{display:"flex",gap:2}}>{PASOS.map((p,j)=><div key={p} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}><div style={{height:3,width:"100%",borderRadius:2,background:j<idx?BRAND.accent:j===idx?BRAND.accent+"55":BRAND.dimmed}} /><span style={{fontSize:8,color:j===idx?BRAND.accent:j<idx?BRAND.muted:BRAND.dimmed,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%",textAlign:"center"}}>{ESTADOS[j].label.split(" ")[0]}</span></div>)}</div>
     </div>
   );
@@ -1484,6 +1533,7 @@ export default function App() {
   const [busqueda,setBusqueda]=useState("");
   const [gBusqueda,setGBusqueda]=useState("");
   const [pagina,setPagina]=useState(1);
+  const [ordenLista,setOrdenLista]=useState(()=>{ try { return localStorage.getItem("repairx_orden_lista")==="antiguas"?"antiguas":"recientes"; } catch(_){ return "recientes"; } });
   const [fotoAmpliada,setFotoAmpliada]=useState(null);
   const [docTipo,setDocTipo]=useState("inventario");
   const [docNombre,setDocNombre]=useState("");
@@ -1500,7 +1550,7 @@ export default function App() {
   const [modalPago,setModalPago]=useState(null);
   const [modalTerminar,setModalTerminar]=useState(null);
   // CAMBIO 4: servicio ahora es array para multi-selección
-  const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:[],tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null});
+  const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:[],tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null,llegada:"",transito:false});
 
   const creandoRef=useRef(false);
   const fotoRef=useRef(); const docRef=useRef(); const fotoPrincipalRef=useRef(); const videoRef=useRef(); const canvasRef=useRef();
@@ -1698,7 +1748,7 @@ export default function App() {
   // Los avisos informativos se ocultan solos
   useEffect(() => { if (!avisoSync) return; const t = setTimeout(() => setAvisoSync(""), 10000); return () => clearTimeout(t); }, [avisoSync]);
 
-  if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></div><div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div></div></div>;
+  if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><LogoRX alto={24} centrado /></div><div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div></div></div>;
   if (recuperacion) return <NuevaPasswordScreen token={recuperacion.accessToken}
     onListo={()=>{ borrarSesion(); setUsuario(null); setRecuperacion(null); setAvisoLogin({ tipo:"info", texto:"Contraseña actualizada. Inicia sesión con tu nueva contraseña." }); }}
     onCancelar={()=>setRecuperacion(null)} />;
@@ -1715,10 +1765,19 @@ export default function App() {
   const totCobradoGlobal=[...ordenes,...ordenesCobro,...ordenesCobradas,...ordenesTerminadas,...historial].filter(o=>o.fechaPago).reduce((a,o)=>a+Math.max(0,(o.costo||0)-(o.descuento||0)),0);
   const proxExp=ordenesTerminadas.filter(o=>{const d=dDias(o.fechaTerminado);return d>=DIAS_TERM-30&&d<=DIAS_TERM;});
 
-  const ordenesActivas=ordenes.filter(o=>{const mE=filtroEstado==="todos"||o.estado===filtroEstado;const mB=busqueda===""||[o.cliente,o.vehiculo,o.placa].some(v=>v.toLowerCase().includes(busqueda.toLowerCase()));return mE&&mB;});
+  const ordenesActivas=ordenarPorAlta(ordenes.filter(o=>{const mE=filtroEstado==="todos"||o.estado===filtroEstado;const mB=busqueda===""||[o.cliente,o.vehiculo,o.placa].some(v=>v.toLowerCase().includes(busqueda.toLowerCase()));return mE&&mB;}), ordenLista);
   const totalPaginas=Math.max(1,Math.ceil(ordenesActivas.length/PAGE_SIZE));
   const paginaActual=Math.min(pagina,totalPaginas);
   const activasPagina=ordenesActivas.slice((paginaActual-1)*PAGE_SIZE, paginaActual*PAGE_SIZE);
+  const cambiarOrdenLista=v=>{ setOrdenLista(v); setPagina(1); try { localStorage.setItem("repairx_orden_lista", v); } catch(_){} };
+  const selectorOrden=(
+    <div role="group" aria-label="Ordenar por fecha de alta" style={{display:"inline-flex",background:BRAND.bg,border:"1px solid "+BRAND.border,borderRadius:9,padding:2,gap:2,flexShrink:0}}>
+      {[{k:"recientes",l:"Más recientes"},{k:"antiguas",l:"Más antiguas"}].map(op=>{ const sel=ordenLista===op.k; return (
+        <button key={op.k} type="button" aria-pressed={sel} onClick={()=>cambiarOrdenLista(op.k)}
+          style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(16,24,40,0.12)":"none"}}>{op.l}</button>
+      ); })}
+    </div>
+  );
 
   const resultadosGlobales=(()=>{
     const q=gBusqueda.trim().toLowerCase(); if(!q)return [];
@@ -1845,9 +1904,15 @@ export default function App() {
       creandoRef.current = false;
     }
     const servicioStr = Array.isArray(form.servicio) ? form.servicio.join(", ") : form.servicio;
+    const { transito, ...datosForm } = form;
+    const bitacoraInicial = [{ accion: "Orden creada", usuario: usuario.nombre, fecha: hoy() }];
+    if (transito) bitacoraInicial.push({ accion: "Unidad enviada a tránsito en espera de piezas", usuario: usuario.nombre, fecha: hoy() });
     const n = {
-      ...form,
+      ...datosForm,
       ...EXTRA(),
+      llegada: form.llegada || "",
+      enTransito: !!transito,
+      fechaTransito: transito ? hoyLocal() : "",
       servicio: servicioStr,
       fechaPrimerIngreso: hoy(),
       id: folio,
@@ -1856,11 +1921,11 @@ export default function App() {
       estado: "presupuesto",
       costo: parseFloat(form.costo) || 0,
       fotos: [], documentos: [], novedades: [], refacciones: [],
-      bitacora: [{ accion: "Orden creada", usuario: usuario.nombre, fecha: hoy() }]
+      bitacora: bitacoraInicial
     };
     setOrdenes(p => [n, ...p]);
     setForm({ cliente:"", telefono:"", vehiculo:"", placa:"", serie:"", siniestro:"",
-      color:"", servicio:[], tecnico:"", entrega:"", notas:"", costo:"", fotoPrincipal:null });
+      color:"", servicio:[], tecnico:"", entrega:"", notas:"", costo:"", fotoPrincipal:null, llegada:"", transito:false });
     setCamaraActiva(false);
     setVista("ordenes");
     setSubVista("activas");
@@ -1892,7 +1957,25 @@ export default function App() {
     </div>
   );
 
-  const renderDashboard=()=>{const rec=ordenes.filter(o=>o.estado!=="armado");return(
+  const renderDashboard=()=>{
+    const activas=ordenarPorAlta(ordenes, ordenLista);
+    const enPiso=activas.filter(o=>!o.enTransito), enTransito=activas.filter(o=>o.enTransito);
+    const abrir=o=>{setOrdenSel(o);setTabDetalle("info");setVista("ordenes");setSubVista("activas");};
+    const columna=(titulo,detalle,lista,color,icono,vacio)=>(
+      <div style={{background:BRAND.bg,borderRadius:12,padding:"0.85rem",minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:14,fontWeight:700,color}}>{icono} {titulo}</div>
+            <div style={{fontSize:11,color:BRAND.muted}}>{detalle}</div>
+          </div>
+          <span style={{fontSize:20,fontWeight:800,color,flexShrink:0}}>{lista.length}</span>
+        </div>
+        {lista.length===0
+          ?<div style={{fontSize:12,color:BRAND.muted,textAlign:"center",padding:"1.25rem 0.5rem"}}>{vacio}</div>
+          :<div style={{display:"flex",flexDirection:"column",gap:10}}>{lista.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>abrir(o)} />)}</div>}
+      </div>
+    );
+    return(
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(4,1fr)":"repeat(2,1fr)",gap:10}}>{[{label:"Órdenes Activas",value:totalAct,color:BRAND.accent},{label:"Para Cobro",value:ordenesCobro.length,color:BRAND.green},{label:"Total Cobrado",value:"$"+totCobradoGlobal.toLocaleString("es-MX"),color:BRAND.purple},{label:"Terminadas",value:ordenesTerminadas.length,color:BRAND.blue}].map((m,i)=><div key={i} style={{...S.metric,border:"0.5px solid "+m.color+"25"}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{m.label}</div><div style={{fontSize:24,fontWeight:800,color:m.color}}>{m.value}</div></div>)}</div>
       {pendientesEquipo>0&&(
@@ -1907,9 +1990,14 @@ export default function App() {
           <span style={{fontSize:12,color:"hsl(0, 75%, 40%)",fontWeight:600,flexShrink:0}}>Ver →</span>
         </div>); })()}
       <div style={S.card}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>Órdenes en Proceso</div><span style={{fontSize:11,color:BRAND.muted}}>{rec.length} {rec.length===1?"orden":"órdenes"}</span></div>
-        {rec.length===0&&<div style={{textAlign:"center",color:BRAND.muted,padding:"1.5rem",fontSize:13}}>Sin órdenes activas</div>}
-        <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(2,1fr)":"1fr",gap:10}}>{rec.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>{setOrdenSel(o);setTabDetalle("info");setVista("ordenes");setSubVista("activas");}} />)}</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>Unidades del taller <span style={{fontSize:11,color:BRAND.muted,fontWeight:400}}>({activas.length} {activas.length===1?"orden activa":"órdenes activas"})</span></div>
+          {selectorOrden}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:desktop?"1fr 1fr":"1fr",gap:12,alignItems:"start"}}>
+          {columna("En piso","Dentro del taller",enPiso,BRAND.accent,"🔧","No hay unidades dentro del taller.")}
+          {columna("En tránsito","Esperando piezas fuera del taller",enTransito,BRAND.blue,"🚗","Ninguna unidad en tránsito. Cuando una unidad salga a esperar piezas, aparecerá aquí.")}
+        </div>
       </div>
     </div>
   );};
@@ -1919,7 +2007,7 @@ export default function App() {
       <div style={{display:"flex",gap:0,marginBottom:14,borderBottom:"0.5px solid "+BRAND.border}}>{subTabs.map(t=><button key={t.k} onClick={()=>{setSubVista(t.k);setOrdenSel(null);}} style={{padding:"10px 16px",fontSize:13,cursor:"pointer",background:"none",border:"none",borderBottom:subVista===t.k?"2px solid "+t.color:"2px solid transparent",color:subVista===t.k?t.color:BRAND.muted,fontWeight:subVista===t.k?700:400,display:"flex",alignItems:"center",gap:6}}>{t.l}{t.count>0&&<span style={{background:subVista===t.k?t.color+"22":BRAND.card2,color:subVista===t.k?t.color:BRAND.muted,borderRadius:10,padding:"0px 7px",fontSize:11}}>{t.count}</span>}</button>)}</div>
       {subVista==="activas"&&(
         <div>
-          {!ordenSel&&<div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}><input style={{...S.input,width:180}} placeholder="Buscar en activas..." value={busqueda} onChange={e=>setBusqueda(e.target.value)} /><select style={{...S.select,width:155}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)}><option value="todos">Todos los estados</option>{ESTADOS.map(e=><option key={e.key} value={e.key}>{e.label}</option>)}</select>{puedePerm(usuario,"crear_ordenes")&&<button style={S.btn} onClick={()=>setVista("nueva")}>+ Nueva Orden</button>}</div>}
+          {!ordenSel&&<div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}><input style={{...S.input,width:180}} placeholder="Buscar en activas..." value={busqueda} onChange={e=>setBusqueda(e.target.value)} /><select style={{...S.select,width:155}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)}><option value="todos">Todos los estados</option>{ESTADOS.map(e=><option key={e.key} value={e.key}>{e.label}</option>)}</select>{selectorOrden}{puedePerm(usuario,"crear_ordenes")&&<button style={S.btn} onClick={()=>setVista("nueva")}>+ Nueva Orden</button>}</div>}
           {ordenSel?<OrdenExpandida onRenombrado={alRenombrar} o={ordenSel} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} tabDetalle={tabDetalle} setTabDetalle={setTabDetalle} avanzarEstado={avanzarEstado} setModalRetroceder={setModalRetroceder} setModalCerrar={setModalCerrar} setModalCobro={setModalCobro} setModalTerminar={setModalTerminar} fotoRef={fotoRef} docRef={docRef} docTipo={docTipo} setDocTipo={setDocTipo} docNombre={docNombre} setDocNombre={setDocNombre} agregarFotos={agregarFotos} eliminarFoto={eliminarFoto} agregarDoc={agregarDoc} eliminarDoc={eliminarDoc} setFotoAmpliada={setFotoAmpliada} usuario={usuario} />:(
             <div>
               <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(2,1fr)":"1fr",gap:10}}>{activasPagina.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>{setOrdenSel(o);setTabDetalle("info");}} />)}</div>
@@ -2005,6 +2093,15 @@ export default function App() {
           <div><label style={S.label}>Teléfono</label><input style={{...S.input,...be("telefono")}} placeholder="55 0000 0000" value={form.telefono} onChange={e=>setForm({...form,telefono:e.target.value})} /><Er f="telefono" /></div>
           <div><label style={S.label}>Vehículo *</label><input style={{...S.input,...be("vehiculo")}} placeholder="Marca, Modelo, Año" value={form.vehiculo} onChange={e=>setForm({...form,vehiculo:e.target.value})} /><Er f="vehiculo" /></div>
           <div><label style={S.label}>Placa *</label><input style={{...S.input,...be("placa")}} placeholder="ABC-000" value={form.placa} onChange={e=>setForm({...form,placa:e.target.value})} /><Er f="placa" /></div>
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={S.label}>¿Cómo llegó la unidad?</label>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {[{k:"grua",l:"🚛 En grúa"},{k:"circulando",l:"🚗 Circulando"}].map(op=>{ const sel=form.llegada===op.k; return (
+                <button key={op.k} type="button" aria-pressed={sel} onClick={()=>setForm(f=>({...f,llegada:f.llegada===op.k?"":op.k}))}
+                  style={{padding:"7px 14px",borderRadius:20,border:"1.5px solid "+(sel?BRAND.accent:BRAND.border),background:sel?BRAND.accent:"#fff",color:sel?"#fff":BRAND.muted,fontSize:12,fontWeight:sel?700:400,cursor:"pointer"}}>{op.l}</button>
+              ); })}
+            </div>
+          </div>
           <div style={{gridColumn:"1/-1"}}><label style={S.label}>No. de Serie / VIN</label><input style={{...S.input,fontFamily:"monospace",letterSpacing:2,textTransform:"uppercase",...be("serie")}} placeholder="Ej. 1HGBH41JXMN109186" maxLength={17} value={form.serie} onChange={e=>setForm({...form,serie:e.target.value.toUpperCase()})} /><Er f="serie" /></div>
           <div style={{gridColumn:"1/-1"}}><label style={S.label}>No. de Siniestro (si aplica)</label><input style={S.input} placeholder="Ej. SIN-2026-00123" value={form.siniestro} onChange={e=>setForm({...form,siniestro:e.target.value})} /></div>
           <div><label style={S.label}>Color</label><input style={S.input} placeholder="Ej. Blanco perla" value={form.color} onChange={e=>setForm({...form,color:e.target.value})} /></div>
@@ -2032,6 +2129,17 @@ export default function App() {
         </div>
         <div style={{marginBottom:10}}><label style={S.label}>Costo Estimado ($)</label><input style={{...S.input,...be("costo")}} type="number" min="0" step="0.01" placeholder="0.00" value={form.costo} onChange={e=>setForm({...form,costo:e.target.value})} /><Er f="costo" /></div>
         <div style={{marginBottom:14}}><label style={S.label}>Notas</label><textarea style={{...S.input,minHeight:60,resize:"vertical"}} placeholder="Describe el problema..." value={form.notas} onChange={e=>setForm({...form,notas:e.target.value})} /></div>
+        <div style={{marginBottom:14,background:form.transito?BRAND.blue+"0D":BRAND.bg,border:"1px solid "+(form.transito?BRAND.blue+"44":BRAND.border),borderRadius:10,padding:"0.8rem 0.9rem"}}>
+          <div style={{fontSize:13,fontWeight:600,marginBottom:8}}>¿La unidad se va a tránsito mientras llegan las piezas?</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {[{v:false,l:"No, se queda en piso"},{v:true,l:"Sí, mandar a tránsito"}].map(op=>{ const sel=!!form.transito===op.v; return (
+              <button key={String(op.v)} type="button" aria-pressed={sel} onClick={()=>setForm(f=>({...f,transito:op.v}))}
+                style={{padding:"7px 14px",borderRadius:20,border:"1.5px solid "+(sel?(op.v?BRAND.blue:BRAND.text):BRAND.border),background:sel?(op.v?BRAND.blue:BRAND.text):"#fff",color:sel?"#fff":BRAND.muted,fontSize:12,fontWeight:sel?700:400,cursor:"pointer"}}>{op.l}</button>
+            ); })}
+          </div>
+          {form.transito&&form.llegada==="grua"&&<div style={{fontSize:12,color:"#B45309",marginTop:8}}>⚠ La unidad llegó en grúa: confirma que puede circular antes de mandarla a tránsito.</div>}
+          {form.transito&&<div style={{fontSize:11,color:BRAND.muted,marginTop:8}}>La orden aparecerá en la columna «En tránsito» del Dashboard. Cuando la unidad regrese, registra su reingreso desde la orden.</div>}
+        </div>
         {hayErrores&&<div style={{background:"#EF444415",border:"0.5px solid #EF444433",borderRadius:8,padding:"7px 10px",fontSize:11,color:"#EF4444",marginBottom:12}}>Corrige los campos marcados antes de crear la orden.</div>}
         <div style={{display:"flex",gap:8}}><button style={{...S.btn,opacity:hayErrores?0.5:1,cursor:hayErrores?"not-allowed":"pointer"}} onClick={crearOrden} disabled={hayErrores}>Crear Orden</button><button style={S.btnSm()} onClick={()=>setVista("ordenes")}>Cancelar</button></div>
       </div>
@@ -2126,7 +2234,7 @@ export default function App() {
   const titulos={dashboard:"",ordenes:"Órdenes de Trabajo",historial:"Historial",nueva:"Nueva Orden",terminadas:"Siniestros Terminados",exportar:"Exportar a Excel",equipo:"Equipo"};
 
   return (
-    <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",minHeight:"100vh",width:"100%",background:BRAND.bg,color:BRAND.text}}>
+    <div style={{fontFamily:FUENTE_APP,minHeight:"100vh",width:"100%",background:BRAND.bg,color:BRAND.text}}>
       <ModalTerminar /><ModalCerrar /><ModalRetroceder /><ModalCobro /><ModalPago />
       {avisoSync&&<div style={{position:"fixed",bottom:errorSync?76:16,left:"50%",transform:"translateX(-50%)",zIndex:961,background:"#1E3A8A",border:"0.5px solid #1E40AF",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000055"}}><span style={{fontSize:12,color:"#DBEAFE"}}>ℹ️ {avisoSync}</span><button onClick={()=>setAvisoSync("")} style={{background:"none",border:"none",color:"#DBEAFE",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
       {errorSync&&<div style={{position:"fixed",bottom:16,left:"50%",transform:"translateX(-50%)",zIndex:960,background:"#7F1D1D",border:"0.5px solid #991b1b",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000088"}}><span style={{fontSize:12,color:"#fca5a5"}}>⚠️ {errorSync}</span><button onClick={()=>setErrorSync("")} style={{background:"none",border:"none",color:"#fca5a5",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
@@ -2138,7 +2246,7 @@ export default function App() {
         <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
           <div style={{padding:desktop?"0 1rem":"0 1rem 0 58px",minHeight:48,borderBottom:"0.5px solid "+BRAND.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:BRAND.card}}>
             <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-              {!desktop&&<span style={{fontSize:15,fontWeight:900,letterSpacing:2}}><span style={{color:BRAND.accent}}>REPAIR</span><span style={{color:BRAND.text}}>X</span></span>}
+              {!desktop&&<span style={{fontSize:15,fontWeight:900,letterSpacing:2}}><LogoRX alto={14} /></span>}
               {titulos[vista]&&desktop&&<span style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{titulos[vista]}</span>}
               {MODO_DEMO&&<span style={{fontSize:10,background:"#F59E0B22",color:"#F59E0B",borderRadius:10,padding:"2px 8px",border:"0.5px solid #F59E0B44"}}>DEMO</span>}
             </div>
