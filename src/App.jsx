@@ -4,6 +4,9 @@ import { useState, useRef, useEffect } from "react";
 const SUPA_URL  = import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const MODO_DEMO = !SUPA_URL || SUPA_URL.includes("TU_PROJECT_ID");
+// Captcha de Cloudflare Turnstile. La site key es pública; la secret key vive solo en Supabase.
+// Si está vacía (p. ej. una copia local sin configurar), la app funciona sin captcha.
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Identidad: fuente Archivo (alojada en /fonts, licencia SIL OFL) y favicon ─
@@ -61,6 +64,7 @@ const ERRORES_AUTH = {
   signup_disabled:            "El registro de cuentas está deshabilitado.",
   email_address_invalid:      "El correo no es válido.",
   same_password:              "La contraseña nueva debe ser distinta de la anterior.",
+  captcha_failed:             "No pudimos confirmar que no eres un robot. Espera unos segundos e inténtalo de nuevo.",
 };
 const traducirErrorAuth = (data, status) => {
   const codigo = (data && data.error_code) || "";
@@ -69,29 +73,33 @@ const traducirErrorAuth = (data, status) => {
   if (/invalid login credentials/i.test(txt))               return ERRORES_AUTH.invalid_credentials;
   if (/already (been )?registered|already exists/i.test(txt)) return ERRORES_AUTH.user_already_exists;
   if (/email not confirmed/i.test(txt))                     return ERRORES_AUTH.email_not_confirmed;
+  if (/captcha/i.test(txt))                                 return ERRORES_AUTH.captcha_failed;
   if (/database error saving new user/i.test(txt))          return "No se pudo crear la cuenta. Si te estás uniendo a un taller, verifica el código e inténtalo de nuevo.";
   if (status === 429 || /rate limit/i.test(txt))            return ERRORES_AUTH.over_request_rate_limit;
   if (/password/i.test(txt) && /(at least|should|weak|contain|characters)/i.test(txt)) return ERRORES_AUTH.weak_password;
   return txt || "No se pudo completar la operación. Inténtalo de nuevo.";
 };
 
+// Supabase recibe el token del captcha dentro de gotrue_meta_security
+const conCaptcha = token => token ? { gotrue_meta_security: { captcha_token: token } } : {};
+
 const supaAuth = {
-  signIn: async (email, password) => {
+  signIn: async (email, password, captcha) => {
     try {
       const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=password", {
         method: "POST", headers: { "Content-Type": "application/json", "apikey": SUPA_KEY },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...conCaptcha(captcha) }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.access_token) return { error: traducirErrorAuth(data, r.status) };
       return { session: data, user: data.user };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
   },
-  signUp: async (email, password, metadata) => {
+  signUp: async (email, password, metadata, captcha) => {
     try {
       const r = await fetch(SUPA_URL + "/auth/v1/signup", {
         method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY },
-        body: JSON.stringify({ email, password, data: metadata }),
+        body: JSON.stringify({ email, password, data: metadata, ...conCaptcha(captcha) }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) return { error: traducirErrorAuth(data, r.status) };
@@ -101,12 +109,12 @@ const supaAuth = {
   },
   // Envía el correo de recuperación. Supabase responde igual exista o no la cuenta
   // (así nadie puede averiguar qué correos están registrados).
-  recuperar: async (email) => {
+  recuperar: async (email, captcha) => {
     try {
       const volverA = window.location.origin + "/";
       const r = await fetch(SUPA_URL + "/auth/v1/recover?redirect_to=" + encodeURIComponent(volverA), {
         method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, ...conCaptcha(captcha) }),
       });
       if (!r.ok) { const data = await r.json().catch(() => ({})); return { error: traducirErrorAuth(data, r.status) }; }
       return { ok: true };
@@ -737,6 +745,68 @@ const mkS = () => ({
 });
 
 // ─── Login / Registro ─────────────────────────────────────────────────────────
+// ─── Captcha (Cloudflare Turnstile) ────────────────────────────────────────────
+let promesaTurnstile = null;
+const cargarTurnstile = () => {
+  if (window.turnstile) return Promise.resolve(window.turnstile);
+  if (!promesaTurnstile) {
+    promesaTurnstile = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.onload = () => (window.turnstile ? resolve(window.turnstile) : reject(new Error("sin turnstile")));
+      script.onerror = () => { promesaTurnstile = null; reject(new Error("bloqueado")); };
+      document.head.appendChild(script);
+    });
+  }
+  return promesaTurnstile;
+};
+
+// Invisible casi siempre: Cloudflare solo pide interacción si algo le parece sospechoso.
+// Cada token sirve una sola vez; al cambiar "reinicio" se pide uno nuevo.
+function Captcha({ onToken, reinicio }) {
+  const cajaRef = useRef(null);
+  const widgetRef = useRef(null);
+  const [falla, setFalla] = useState("");
+  useEffect(() => {
+    let vivo = true;
+    cargarTurnstile().then(ts => {
+      if (!vivo || !cajaRef.current) return;
+      widgetRef.current = ts.render(cajaRef.current, {
+        sitekey: TURNSTILE_SITE_KEY,
+        language: "es",
+        theme: "light",
+        size: "flexible",
+        appearance: "interaction-only",
+        callback: token => { setFalla(""); onToken(token); },
+        "expired-callback": () => onToken(""),
+        "timeout-callback": () => onToken(""),
+        "error-callback": codigo => {
+          onToken("");
+          setFalla("La verificación de seguridad falló" + (codigo ? ` (código ${codigo})` : "") + ". Recarga la página e inténtalo de nuevo.");
+        },
+      });
+    }).catch(() => {
+      if (vivo) setFalla("No se pudo cargar la verificación de seguridad. Si usas un bloqueador de anuncios o los escudos de Brave, desactívalos para este sitio y recarga la página.");
+    });
+    return () => {
+      vivo = false;
+      if (widgetRef.current !== null && window.turnstile) { try { window.turnstile.remove(widgetRef.current); } catch (_) {} }
+    };
+  }, []);
+  useEffect(() => {
+    if (!reinicio || widgetRef.current === null || !window.turnstile) return;
+    onToken("");
+    try { window.turnstile.reset(widgetRef.current); } catch (_) {}
+  }, [reinicio]);
+  return (
+    <div style={{marginBottom:12}}>
+      <div ref={cajaRef} />
+      {falla && <div role="alert" style={{background:"#F59E0B1A",border:"0.5px solid #F59E0B66",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#92400E",marginTop:8}}>{falla}</div>}
+    </div>
+  );
+}
+
 function ReglasPassword({ pw }) {
   const reglas = [
     { ok: pw.length >= 8,   t: "8+ caracteres" },
@@ -831,6 +901,10 @@ function LoginScreen({ onLogin, aviso }) {
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
   const [nombre,setNombre]=useState(""); const [tallerNombre,setTallerNombre]=useState(""); const [codigo,setCodigo]=useState("");
   const [logo,setLogo]=useState(null); const logoRef=useRef();
+  const captchaActivo = !!TURNSTILE_SITE_KEY && !MODO_DEMO;
+  const [captcha,setCaptcha]=useState(""); const [reinicioCaptcha,setReinicioCaptcha]=useState(0);
+  const nuevoCaptcha = () => { if (captchaActivo) setReinicioCaptcha(n => n + 1); };
+  const faltaCaptcha = () => { if (captchaActivo && !captcha) { setErr("Espera un momento: estamos verificando que no eres un robot."); return true; } return false; };
   const [err,setErr]=useState(aviso&&aviso.tipo==="error"?aviso.texto:""); const [info,setInfo]=useState(aviso&&aviso.tipo==="info"?aviso.texto:""); const [loading,setL]=useState(false);
 
   const onLogo = async e => {
@@ -867,9 +941,11 @@ function LoginScreen({ onLogin, aviso }) {
 
   const doLogin = async () => {
     if(!em.trim()||!pw){setErr("Completa todos los campos.");return;}
+    if(faltaCaptcha()) return;
     setL(true);setErr("");setInfo("");
     if(MODO_DEMO){ setTimeout(()=>{ const u=DEMOS.find(x=>x.email===em.trim().toLowerCase()&&x.pass===pw); if(u)onLogin({...u,modoDemo:true,token:null,refreshToken:null,tallerNombre:u.taller,logo:null}); else {setErr("Email o contraseña incorrectos.");setL(false);} },600); return; }
-    const { session, user, error } = await supaAuth.signIn(em.trim().toLowerCase(), pw);
+    const { session, user, error } = await supaAuth.signIn(em.trim().toLowerCase(), pw, captcha);
+    nuevoCaptcha();
     if(error){setErr(error);setL(false);return;}
     await completarLogin(session, user);
   };
@@ -877,8 +953,10 @@ function LoginScreen({ onLogin, aviso }) {
   const doCrear = async () => {
     if(!tallerNombre.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
     { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
+    if(faltaCaptcha()) return;
     setL(true);setErr("");setInfo("");
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"" });
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"" }, captcha);
+    nuevoCaptcha();
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
     else { setInfo("¡Taller registrado! Si te pide confirmar el correo, hazlo y luego inicia sesión. Tu código aparecerá en la sección Equipo."); setModo("login"); setL(false); }
@@ -887,10 +965,12 @@ function LoginScreen({ onLogin, aviso }) {
   const doUnir = async () => {
     if(!codigo.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
     { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
+    if(faltaCaptcha()) return;
     setL(true);setErr("");setInfo("");
     const taller = await supaApi.verificarTaller(codigo.trim().toUpperCase());
     if(!taller){ setErr("El código de taller no existe. Verifícalo con tu administrador."); setL(false); return; }
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase() });
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase() }, captcha);
+    nuevoCaptcha();
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
     else { setInfo("¡Solicitud enviada a "+taller.nombre+"! Si te pide confirmar el correo, hazlo. Podrás entrar cuando el administrador del taller te apruebe."); setModo("login"); setL(false); }
@@ -899,8 +979,10 @@ function LoginScreen({ onLogin, aviso }) {
   const doRecuperar = async () => {
     const correo = em.trim().toLowerCase();
     if (!correo || !correo.includes("@")) { setErr("Escribe el correo con el que te registraste."); return; }
+    if (faltaCaptcha()) return;
     setL(true); setErr(""); setInfo("");
-    const { error } = await supaAuth.recuperar(correo);
+    const { error } = await supaAuth.recuperar(correo, captcha);
+    nuevoCaptcha();
     setL(false);
     if (error) { setErr(error); return; }
     setInfo("Si ese correo tiene una cuenta, te enviamos un enlace para crear una contraseña nueva. Revisa también la carpeta de spam. El enlace vence en 1 hora.");
@@ -958,9 +1040,11 @@ function LoginScreen({ onLogin, aviso }) {
         </>}
         {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
         {info&&<div style={{background:BRAND.green+"22",border:"0.5px solid "+BRAND.green+"44",borderRadius:8,padding:"8px 12px",fontSize:12,color:BRAND.green,marginBottom:14}}>{info}</div>}
-        <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}} onClick={submit} disabled={loading}>
+        {captchaActivo&&<Captcha onToken={setCaptcha} reinicio={reinicioCaptcha} />}
+        <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:(loading||(captchaActivo&&!captcha))?"not-allowed":"pointer",opacity:(loading||(captchaActivo&&!captcha))?0.7:1}} onClick={submit} disabled={loading||(captchaActivo&&!captcha)}>
           {loading?"Procesando...":modo==="recuperar"?"Enviar enlace":modo==="login"?"Entrar":modo==="crear"?"Crear taller":"Unirme"}
         </button>
+        {captchaActivo&&!captcha&&!loading&&<div style={{fontSize:11,color:BRAND.muted,textAlign:"center",marginTop:8}}>Verificando que no eres un robot…</div>}
         {modo==="recuperar"&&<button type="button" onClick={()=>cambiarModo("login")} style={{width:"100%",marginTop:10,background:"none",border:"none",color:BRAND.muted,fontSize:12,cursor:"pointer"}}>← Volver a iniciar sesión</button>}
       </div>
       {MODO_DEMO&&(
