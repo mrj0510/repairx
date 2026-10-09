@@ -236,16 +236,120 @@ const BUCKET_FOTOS = "fotos";
 const MAX_ARCHIVO_MB = 20;
 const PAGE_SIZE = 8;
 
-const supaStorage = {
-  subirImagen: async (token, taller, ordenId, blob, nombre) => {
-    const safeTaller = String(taller||"taller").replace(/[^a-zA-Z0-9]/g,"_");
-    const safeNombre = String(nombre||"foto").replace(/[^a-zA-Z0-9.]/g,"_");
-    const path = `${safeTaller}/${ordenId}/${Date.now()}_${safeNombre}`;
-    const r = await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET_FOTOS}/${path}`, {
-      method:"POST", headers:{ "apikey":SUPA_KEY,"Authorization":"Bearer "+token,"Content-Type":blob.type||"image/jpeg" }, body:blob,
+// ─── Archivos privados (bucket "fotos") ──────────────────────────────────────────
+// El bucket es privado. Cada foto o documento guarda solo su RUTA (<taller>/<orden>/<archivo>);
+// para mostrarlo, la app pide a Supabase un enlace temporal firmado. Solo los usuarios aprobados
+// del taller dueño de la carpeta pueden obtenerlo (reglas en migracion_fotos_privadas.sql).
+const VIGENCIA_ENLACE_S = 3600;            // cada enlace temporal dura 1 hora
+const RENOVAR_ANTES_MS = 10 * 60 * 1000;   // se pide uno nuevo cuando le quedan menos de 10 minutos
+const LOTE_FIRMAS = 100;                   // enlaces por pedido a Supabase
+const TIPOS_ARCHIVO = {
+  jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", webp:"image/webp",
+  pdf:"application/pdf", doc:"application/msword",
+  docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls:"application/vnd.ms-excel",
+  xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+const EXT_DOCUMENTO = ["pdf", "doc", "docx", "xls", "xlsx"];
+
+// Las fotos subidas antes de este cambio guardaban la dirección pública completa:
+// de ella se obtiene la ruta, sin migrar datos y sin importar de qué proyecto sea la dirección.
+const RE_RUTA_STORAGE = new RegExp(`/storage/v1/object/(?:public|sign|authenticated)/${BUCKET_FOTOS}/([^?#]+)`);
+const rutaArchivo = item => {
+  if (!item) return null;
+  if (item.ruta) return item.ruta;
+  const m = RE_RUTA_STORAGE.exec(item.url || "");
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch (_) { return m[1]; }
+};
+
+const enlacesFirmados = new Map();   // ruta → { url, vence }
+const sinAcceso = new Map();         // ruta → cuándo dijo Supabase que no existe o no se puede ver
+const SIN_ACCESO_MS = 5 * 60 * 1000; // durante 5 minutos no se vuelve a preguntar por esa ruta
+const sinAccesoReciente = ruta => { const t = sinAcceso.get(ruta); return !!t && Date.now() - t < SIN_ACCESO_MS; };
+let colaFirmas = new Map();          // ruta → funciones que esperan su enlace
+let loteProgramado = null;
+
+const enlaceVigente = ruta => {
+  const e = enlacesFirmados.get(ruta);
+  return e && e.vence - Date.now() > RENOVAR_ANTES_MS ? e.url : null;
+};
+
+const firmarLote = async (token, rutas) => {
+  for (let i = 0; i < rutas.length; i += LOTE_FIRMAS) {
+    const parte = rutas.slice(i, i + LOTE_FIRMAS);
+    const pedido = Date.now();
+    const r = await fetch(`${SUPA_URL}/storage/v1/object/sign/${BUCKET_FOTOS}`, {
+      method:"POST",
+      headers:{ "apikey":SUPA_KEY, "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+      body:JSON.stringify({ expiresIn:VIGENCIA_ENLACE_S, paths:parte }),
     });
-    if (!r.ok) throw new Error("No se pudo subir la imagen al servidor.");
-    return `${SUPA_URL}/storage/v1/object/public/${BUCKET_FOTOS}/${path}`;
+    if (!r.ok) continue;   // falla general (red, sesión): el componente vuelve a intentar
+    const datos = await r.json().catch(() => []);
+    (Array.isArray(datos) ? datos : []).forEach((d, j) => {
+      const ruta = (d && d.path) || parte[j];
+      if (d && d.signedURL && !d.error) {
+        enlacesFirmados.set(ruta, { url:encodeURI(`${SUPA_URL}/storage/v1${d.signedURL}`), vence:pedido + VIGENCIA_ENLACE_S * 1000 });
+        sinAcceso.delete(ruta);
+      } else if (d && d.error) sinAcceso.set(ruta, Date.now());
+    });
+  }
+};
+
+// Las imágenes que se dibujan al mismo tiempo piden su enlace juntas: un solo pedido para todas.
+const pedirEnlace = (token, ruta) => {
+  const vigente = enlaceVigente(ruta);
+  if (vigente) return Promise.resolve(vigente);
+  if (sinAccesoReciente(ruta)) return Promise.resolve(null);
+  return new Promise(resolve => {
+    if (!colaFirmas.has(ruta)) colaFirmas.set(ruta, []);
+    colaFirmas.get(ruta).push(resolve);
+    if (loteProgramado) return;
+    loteProgramado = setTimeout(async () => {
+      const lote = colaFirmas;
+      colaFirmas = new Map();
+      loteProgramado = null;
+      try { await firmarLote(token, [...lote.keys()]); } catch (_) { /* sin conexión: se reintenta */ }
+      lote.forEach((esperan, r) => { const url = enlaceVigente(r); esperan.forEach(fn => fn(url)); });
+    }, 0);
+  });
+};
+
+const supaStorage = {
+  // Sube un archivo a <taller>/<orden>/<fecha>_<nombre> y devuelve su ruta (no una dirección pública)
+  subirArchivo: async (token, taller, ordenId, blob, nombre) => {
+    const safeTaller = String(taller||"taller").replace(/[^a-zA-Z0-9]/g,"_");
+    const safeOrden = String(ordenId||"orden").replace(/[^a-zA-Z0-9_-]/g,"_");
+    const safeNombre = String(nombre||"archivo").replace(/[^a-zA-Z0-9.]/g,"_");
+    const ruta = `${safeTaller}/${safeOrden}/${Date.now()}_${safeNombre}`;
+    const ext = safeNombre.includes(".") ? safeNombre.split(".").pop().toLowerCase() : "";
+    const r = await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET_FOTOS}/${ruta}`, {
+      method:"POST",
+      headers:{ "apikey":SUPA_KEY, "Authorization":"Bearer "+token, "Content-Type":TIPOS_ARCHIVO[ext]||blob.type||"application/octet-stream" },
+      body:blob,
+    });
+    if (!r.ok) {
+      let detalle = "";
+      try { const j = await r.json(); detalle = String(j.message || j.error || ""); } catch (_) {}
+      if (r.status === 413 || /size|large|exceed/i.test(detalle)) throw new Error(`supera el límite de ${MAX_ARCHIVO_MB} MB del servidor.`);
+      if (/mime|type/i.test(detalle)) throw new Error("el servidor no acepta este tipo de archivo.");
+      throw new Error("no se pudo subir al servidor. Revisa tu conexión e inténtalo de nuevo.");
+    }
+    return ruta;
+  },
+  // Borra archivos del bucket. Solo funciona en la carpeta del propio taller.
+  borrarArchivos: async (token, rutas) => {
+    const lista = (rutas || []).filter(Boolean);
+    if (!lista.length) return 0;
+    lista.forEach(x => enlacesFirmados.delete(x));
+    const r = await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET_FOTOS}`, {
+      method:"DELETE",
+      headers:{ "apikey":SUPA_KEY, "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+      body:JSON.stringify({ prefixes:lista }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const borrados = await r.json().catch(() => []);
+    return Array.isArray(borrados) ? borrados.length : 0;
   },
 };
 
@@ -804,6 +908,66 @@ function Captcha({ onToken, reinicio }) {
       <div ref={cajaRef} />
       {falla && <div role="alert" style={{background:"#F59E0B1A",border:"0.5px solid #F59E0B66",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#92400E",marginTop:8}}>{falla}</div>}
     </div>
+  );
+}
+
+// ─── Mostrar y descargar archivos privados ───────────────────────────────────────
+// Las fotos del modo demostración y los documentos guardados antes dentro de la orden ya traen su
+// contenido (data:) y se usan tal cual; todo lo demás pide un enlace temporal y lo renueva solo.
+function useEnlaceArchivo(item, token) {
+  const ruta = rutaArchivo(item);
+  const directo = ruta ? null : (item && item.url) || null;
+  const inicial = directo || (ruta ? enlaceVigente(ruta) : null);
+  const [url, setUrl] = useState(inicial);
+  const [estado, setEstado] = useState(inicial ? "listo" : ruta && !sinAccesoReciente(ruta) ? "cargando" : "no-disponible");
+  // Si el componente pasa a mostrar otro archivo, nunca se queda con el enlace del anterior
+  useEffect(() => {
+    const u = directo || (ruta ? enlaceVigente(ruta) : null);
+    setUrl(u);
+    setEstado(u ? "listo" : ruta && !sinAccesoReciente(ruta) ? "cargando" : "no-disponible");
+  }, [ruta, directo]);
+  useEffect(() => {
+    if (!ruta || !token) return;
+    let vivo = true, reloj = null;
+    const cargar = () => pedirEnlace(token, ruta).then(u => {
+      if (!vivo) return;
+      if (u) {
+        setUrl(u); setEstado("listo");
+        const e = enlacesFirmados.get(ruta);
+        // Se renueva antes de vencer: la descarga sigue funcionando aunque la orden quede abierta horas.
+        reloj = setTimeout(cargar, Math.max(60000, (e ? e.vence : Date.now()) - Date.now() - RENOVAR_ANTES_MS + 1000));
+      } else if (sinAccesoReciente(ruta)) {
+        setUrl(null); setEstado("no-disponible");
+      } else {
+        reloj = setTimeout(cargar, 15000);   // sin conexión o sesión renovándose: se vuelve a intentar
+      }
+    });
+    cargar();
+    return () => { vivo = false; clearTimeout(reloj); };
+  }, [ruta, token]);
+  return { url, estado };
+}
+
+function ImagenArchivo({ item, token, alt, style, onClick }) {
+  const { url, estado } = useEnlaceArchivo(item, token);
+  if (url) return <img src={url} alt={alt || ""} style={style} onClick={onClick} />;
+  return (
+    <div role="img" aria-label={alt || "Archivo"} onClick={onClick}
+      style={{ ...style, minWidth:80, minHeight:60, display:"flex", alignItems:"center", justifyContent:"center",
+        background:BRAND.bg, color:BRAND.muted, fontSize:11, textAlign:"center", padding:6, boxSizing:"border-box" }}>
+      {estado === "no-disponible" ? "Archivo no disponible" : "Cargando…"}
+    </div>
+  );
+}
+
+function EnlaceArchivo({ item, token, nombre, style, children }) {
+  const { url, estado } = useEnlaceArchivo(item, token);
+  // En un enlace firmado, el parámetro download hace que el archivo se descargue con su nombre original.
+  const href = !url ? undefined : url.startsWith("data:") ? url : `${url}&download=${encodeURIComponent(nombre || "archivo")}`;
+  return (
+    <a href={href} download={nombre} target="_blank" rel="noreferrer" aria-disabled={!url}
+      title={url ? "Descargar" : estado === "no-disponible" ? "Archivo no disponible" : "Preparando descarga…"}
+      style={{ ...style, opacity:url ? 1 : 0.45, pointerEvents:url ? "auto" : "none" }}>{children}</a>
   );
 }
 
@@ -1504,7 +1668,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             <div style={{border:"1.5px dashed "+BRAND.border,borderRadius:10,padding:"0.85rem",textAlign:"center",cursor:"pointer",background:BRAND.bg,marginBottom:12}} onClick={()=>fotoRef.current?.click()}><div style={{fontSize:12,color:BRAND.muted}}>📷 Subir fotos del vehículo</div></div>
             <input ref={fotoRef} type="file" accept={ACCEPT_IMG} multiple style={{display:"none"}} onChange={ev=>agregarFotos(ev.target.files)} />
             {(!o.fotos||o.fotos.length===0)&&<div style={{color:BRAND.muted,fontSize:13,textAlign:"center",padding:"1.5rem 0"}}>Sin fotos aún</div>}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:8}}>{(o.fotos||[]).map(f=><div key={f.id} style={{position:"relative",aspectRatio:"4/3",borderRadius:8,overflow:"hidden",border:"0.5px solid "+BRAND.border}}><img src={f.url} alt={f.nombre} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}} onClick={()=>setFotoAmpliada(f)} /><button onClick={()=>eliminarFoto(f.id)} style={{position:"absolute",top:4,right:4,background:"#000a",border:"none",color:"#fff",borderRadius:"50%",width:20,height:20,cursor:"pointer",fontSize:11,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button></div>)}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:8}}>{(o.fotos||[]).map(f=><div key={f.id} style={{position:"relative",aspectRatio:"4/3",borderRadius:8,overflow:"hidden",border:"0.5px solid "+BRAND.border}}><ImagenArchivo item={f} token={usuario?.token} alt={f.nombre} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}} onClick={()=>setFotoAmpliada(f)} /><button onClick={()=>eliminarFoto(f.id)} style={{position:"absolute",top:4,right:4,background:"#000a",border:"none",color:"#fff",borderRadius:"50%",width:20,height:20,cursor:"pointer",fontSize:11,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button></div>)}</div>
           </div>
         )}
         {tabDetalle==="docs"&&(
@@ -1518,7 +1682,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             </div>
             <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
               <div style={{fontSize:12,fontWeight:600,color:BRAND.muted,marginBottom:10}}>Documentos adjuntos {(o.documentos||[]).length>0&&<span style={{background:BRAND.card2,borderRadius:10,padding:"1px 8px",fontSize:11,color:BRAND.accent}}>{o.documentos.length}</span>}</div>
-              {(!o.documentos||o.documentos.length===0)?<div style={{textAlign:"center",color:BRAND.muted,fontSize:12,padding:"1.5rem 0"}}>Sin documentos adjuntos</div>:TIPOS_DOC.map(t=>{const docs=(o.documentos||[]).filter(d=>d.tipo===t.key);if(!docs.length)return null;return(<div key={t.key} style={{marginBottom:12}}><div style={{fontSize:11,color:BRAND.muted,marginBottom:6}}>{t.label} ({docs.length})</div>{docs.map(d=><div key={d.id} style={{display:"flex",alignItems:"center",gap:8,background:BRAND.card2,borderRadius:8,padding:"0.55rem 0.75rem",marginBottom:6}}><div style={{width:28,height:28,borderRadius:5,background:BRAND.dimmed,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:BRAND.accent,flexShrink:0}}>{d.ext}</div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.nombre}</div><div style={{fontSize:10,color:BRAND.muted}}>{d.fecha} - {d.size}</div></div><div style={{display:"flex",gap:4,flexShrink:0}}><a href={d.url} download={d.archivo} target="_blank" rel="noreferrer" style={{...S.btnSm(BRAND.blue),textDecoration:"none",display:"inline-block"}}>⬇</a><button style={S.btnSm()} onClick={()=>eliminarDoc(d.id)}>✕</button></div></div>)}</div>);})}
+              {(!o.documentos||o.documentos.length===0)?<div style={{textAlign:"center",color:BRAND.muted,fontSize:12,padding:"1.5rem 0"}}>Sin documentos adjuntos</div>:TIPOS_DOC.map(t=>{const docs=(o.documentos||[]).filter(d=>d.tipo===t.key);if(!docs.length)return null;return(<div key={t.key} style={{marginBottom:12}}><div style={{fontSize:11,color:BRAND.muted,marginBottom:6}}>{t.label} ({docs.length})</div>{docs.map(d=><div key={d.id} style={{display:"flex",alignItems:"center",gap:8,background:BRAND.card2,borderRadius:8,padding:"0.55rem 0.75rem",marginBottom:6}}><div style={{width:28,height:28,borderRadius:5,background:BRAND.dimmed,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:BRAND.accent,flexShrink:0}}>{d.ext}</div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.nombre}</div><div style={{fontSize:10,color:BRAND.muted}}>{d.fecha} - {d.size}</div></div><div style={{display:"flex",gap:4,flexShrink:0}}><EnlaceArchivo item={d} token={usuario?.token} nombre={d.archivo} style={{...S.btnSm(BRAND.blue),textDecoration:"none",display:"inline-block"}}>⬇</EnlaceArchivo><button style={S.btnSm()} onClick={()=>eliminarDoc(d.id)}>✕</button></div></div>)}</div>);})}
             </div>
           </div>
         )}
@@ -1904,16 +2068,17 @@ export default function App() {
           setSubiendo(esHEIC(f) ? `Convirtiendo HEIC${cuenta}...` : `Comprimiendo imagen${cuenta}...`);
           const { blob, dataUrl } = await procesarImagen(f, "foto");
 
-          let url = dataUrl;
+          // En el servidor se guarda solo la ruta del archivo; en el modo demostración, la imagen misma
+          let archivo = { url: dataUrl };
           if (!usuario.modoDemo) {
             setSubiendo(`Subiendo${cuenta}...`);
-            url = await supaStorage.subirImagen(usuario.token, usuario.taller, ordenSel.id, blob, nombreJpg(f.name));
+            archivo = { ruta: await supaStorage.subirArchivo(usuario.token, usuario.taller, ordenSel.id, blob, nombreJpg(f.name)) };
           }
           const foto = {
             id: Date.now() + Math.random(),
             nombre: nombreJpg(f.name),
             fecha: hoy(),
-            url,
+            ...archivo,
             size: (blob.size / 1024).toFixed(0) + " KB"
           };
           setOrdenes(p => {
@@ -1935,11 +2100,19 @@ export default function App() {
     }
   };
 
-  const eliminarFoto=fid=>{ if(!confirm("¿Eliminar esta foto? Esta acción no se puede deshacer."))return; const u=ordenes.map(o=>o.id===ordenSel.id?{...o,fotos:o.fotos.filter(f=>f.id!==fid)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); };
+  // Borra el archivo del servidor después de quitarlo de la orden. Si falla, solo queda un archivo
+  // suelto en la carpeta del taller (la orden ya no lo muestra); no se interrumpe al usuario.
+  const borrarDelServidor = item => {
+    const ruta = rutaArchivo(item);
+    if (!ruta || usuario.modoDemo || !usuario.token) return;
+    supaStorage.borrarArchivos(usuario.token, [ruta]).catch(e => console.warn("No se pudo borrar del servidor:", ruta, e.message));
+  };
+  const eliminarFoto=fid=>{ if(!confirm("¿Eliminar esta foto? Esta acción no se puede deshacer."))return; const foto=(ordenSel.fotos||[]).find(f=>f.id===fid); const u=ordenes.map(o=>o.id===ordenSel.id?{...o,fotos:o.fotos.filter(f=>f.id!==fid)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); borrarDelServidor(foto); };
   const agregarDoc=async files=>{
     if(!ordenSel||!files.length)return; const f=files[0]; if(f.size>MAX_ARCHIVO_MB*1024*1024){alert(`«${f.name}» supera el límite de ${MAX_ARCHIVO_MB} MB.`);return;} const ext=f.name.split(".").pop().toUpperCase(); setSubiendo("Procesando documento...");
+    if(!pareceImagen(f) && !EXT_DOCUMENTO.includes(ext.toLowerCase())){setSubiendo("");alert(`«${f.name}»: solo se pueden adjuntar PDF, Word, Excel o imágenes.`);return;}
     try{
-      let url, tamKB = (f.size/1024).toFixed(0), extFinal = ext, nombreArchivo = f.name;
+      let archivo, tamKB = (f.size/1024).toFixed(0), extFinal = ext, nombreArchivo = f.name;
       if (pareceImagen(f)) {
         // Documento-imagen: se convierte a JPEG comprimido igual que las fotos
         setSubiendo(esHEIC(f) ? "Convirtiendo HEIC..." : "Comprimiendo documento...");
@@ -1947,18 +2120,22 @@ export default function App() {
         tamKB = (blob.size/1024).toFixed(0);
         extFinal = "JPG";
         nombreArchivo = nombreJpg(f.name);
-        if (!usuario.modoDemo) { setSubiendo(`Subiendo ${nombreArchivo}...`); url = await supaStorage.subirImagen(usuario.token,usuario.taller,ordenSel.id,blob,nombreArchivo); }
-        else url = dataUrl;
+        if (!usuario.modoDemo) { setSubiendo(`Subiendo ${nombreArchivo}...`); archivo = { ruta: await supaStorage.subirArchivo(usuario.token,usuario.taller,ordenSel.id,blob,nombreArchivo) }; }
+        else archivo = { url: dataUrl };
+      } else if (!usuario.modoDemo) {
+        // PDF, Word y Excel se suben tal cual al bucket privado. Antes se guardaban dentro de la orden,
+        // y cada vez que se abría la app se descargaban completos los de todas las órdenes.
+        setSubiendo(`Subiendo ${nombreArchivo}...`);
+        archivo = { ruta: await supaStorage.subirArchivo(usuario.token,usuario.taller,ordenSel.id,f,nombreArchivo) };
       } else {
-        // PDF, Word, Excel, etc.: se guardan tal cual
-        url = await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=()=>rej(new Error("No se pudo leer el archivo."));r.readAsDataURL(f);});
+        archivo = { url: await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=()=>rej(new Error("No se pudo leer el archivo."));r.readAsDataURL(f);}) };
       }
-      const doc={id:Date.now()+Math.random(),tipo:docTipo,nombre:docNombre||nombreArchivo,archivo:nombreArchivo,ext:extFinal,fecha:hoy(),size:tamKB+" KB",url};
+      const doc={id:Date.now()+Math.random(),tipo:docTipo,nombre:docNombre||nombreArchivo,archivo:nombreArchivo,ext:extFinal,fecha:hoy(),size:tamKB+" KB",...archivo};
       setOrdenes(p=>{const u=p.map(o=>o.id===ordenSel.id?{...o,documentos:[...(o.documentos||[]),doc]}:o);setOrdenSel(u.find(o=>o.id===ordenSel.id));return u;});
       setDocNombre("");
-    }catch(e){alert(e.codigo==="HEIC_NO_SOPORTADO" ? e.message : "Error al adjuntar el documento: "+e.message);}finally{setSubiendo("");}
+    }catch(e){alert(e.codigo==="HEIC_NO_SOPORTADO" ? e.message : `No se pudo adjuntar «${f.name}»: ${e.message}`);}finally{setSubiendo("");}
   };
-  const eliminarDoc=did=>{ if(!confirm("¿Eliminar este documento? Esta acción no se puede deshacer."))return; const u=ordenes.map(o=>o.id===ordenSel.id?{...o,documentos:o.documentos.filter(d=>d.id!==did)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); };
+  const eliminarDoc=did=>{ if(!confirm("¿Eliminar este documento? Esta acción no se puede deshacer."))return; const doc=(ordenSel.documentos||[]).find(d=>d.id===did); const u=ordenes.map(o=>o.id===ordenSel.id?{...o,documentos:o.documentos.filter(d=>d.id!==did)}:o);setOrdenes(u);setOrdenSel(u.find(o=>o.id===ordenSel.id)); borrarDelServidor(doc); };
 
   const abrirCamara=async()=>{setCamaraActiva(true);setTimeout(async()=>{try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});if(videoRef.current){videoRef.current.srcObject=s;videoRef.current.play();}}catch{setCamaraActiva(false);alert("No se pudo acceder a la cámara.");}},100);};
   const tomarFoto=()=>{const v=videoRef.current,c=canvasRef.current;if(!v||!c)return;c.width=v.videoWidth;c.height=v.videoHeight;c.getContext("2d").drawImage(v,0,0);setForm(f=>({...f,fotoPrincipal:c.toDataURL("image/jpeg",0.75)}));if(v.srcObject)v.srcObject.getTracks().forEach(t=>t.stop());setCamaraActiva(false);};
@@ -2324,7 +2501,7 @@ export default function App() {
       {errorSync&&<div style={{position:"fixed",bottom:16,left:"50%",transform:"translateX(-50%)",zIndex:960,background:"#7F1D1D",border:"0.5px solid #991b1b",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000088"}}><span style={{fontSize:12,color:"#fca5a5"}}>⚠️ {errorSync}</span><button onClick={()=>setErrorSync("")} style={{background:"none",border:"none",color:"#fca5a5",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
-      {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><img src={fotoAmpliada.url} alt="" style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
+      {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><ImagenArchivo item={fotoAmpliada} token={usuario?.token} alt={fotoAmpliada.nombre} style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
       <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} />
       <div style={{marginLeft:desktop?240:0,display:"flex",flexDirection:"column",minHeight:"100vh",minWidth:0}}>
         <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
