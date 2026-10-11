@@ -394,15 +394,18 @@ const ACCEPT_IMG = "image/*,.heic,.heif";
 
 const nombreJpg = (nombre) => String(nombre || "foto").replace(/\.[^.]+$/, "") + ".jpg";
 
-// ── Degradación cuando no se puede convertir HEIC en el navegador ──
-const TIMEOUT_HEIC_MS = 20000;
+// ── HEIC/HEIF: fotos de iPhone y de muchos Android ──
+// Safari las abre solo; Chrome, Edge, Brave y Firefox no. Para ellos se usa heic-to en su
+// versión para CSP estricta: decodifica en un worker (blob:) sin eval ni new Function, así que
+// funciona con la política de seguridad de vercel.json sin aflojarla.
+// Pesa ~3 MB: se descarga solo la primera vez que alguien sube una HEIC (import dinámico).
+const TIMEOUT_HEIC_MS = 60000;   // margen para fotos de 24 a 48 MP en celulares lentos
 
 const MENSAJE_HEIC = (nombre) =>
-  `«${nombre}» está en formato HEIC/HEIF y este navegador no puede convertirlo.\n\n` +
+  `No se pudo convertir «${nombre}» (formato HEIC/HEIF): puede estar dañada o en una variante poco común.\n\n` +
   `Cómo resolverlo:\n\n` +
-  `1. Desde el celular: sube la foto directamente desde el teléfono (se convierte sola a JPEG).\n\n` +
-  `2. Desde la PC: ábrela con la app "Fotos" de Windows y usa "Guardar como" → JPEG.\n\n` +
-  `3. Para que no vuelva a pasar, configura tu cámara en JPEG:\n` +
+  `1. Ábrela en el celular o en la app "Fotos" de Windows, guárdala como JPEG y súbela otra vez.\n\n` +
+  `2. Para que no vuelva a pasar, configura tu cámara en JPEG:\n` +
   `   • iPhone: Ajustes → Cámara → Formatos → "Más compatible"\n` +
   `   • Samsung: Cámara → Ajustes → Opciones avanzadas → desactivar "Imágenes HEIF"`;
 
@@ -412,22 +415,18 @@ const errorHEIC = (nombre) => {
   return e;
 };
 
-// El decodificador HEIC (libheif compilado con Emscripten) genera código en
-// runtime con new Function(). Si el CSP no permite 'unsafe-eval', el error se
-// lanza dentro de la librería y la promesa NUNCA se resuelve → la app se cuelga.
-// Por eso comprobamos la capacidad ANTES de intentar, y así el usuario recibe
-// instrucciones al instante en vez de esperar un timeout.
-let _permiteEval = null;
-const permiteGenerarCodigo = () => {
-  if (_permiteEval === null) {
-    try { new Function("return 1"); _permiteEval = true; }
-    catch { _permiteEval = false; }
-  }
-  return _permiteEval;
+// Una HEIC empieza con la caja "ftyp" y una marca HEIF: así se reconoce aunque llegue con otra
+// extensión o sin tipo (pasa al copiar fotos de Android a Windows).
+const MARCAS_HEIF = ["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1"];
+const contenidoEsHEIF = async (file) => {
+  try {
+    const b = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    const txt = String.fromCharCode(...b);
+    return txt.slice(4, 8) === "ftyp" && MARCAS_HEIF.includes(txt.slice(8, 12));
+  } catch { return false; }
 };
 
-// Red de seguridad para el resto de fallos: worker que muere en silencio,
-// archivo corrupto, librería que se cuelga. Nunca dejar la UI bloqueada.
+// Red de seguridad: un archivo corrupto o un worker que muere nunca deben dejar la app colgada
 const conTimeout = (promesa, ms) => {
   let timer;
   const limite = new Promise((_, rechazar) => {
@@ -436,28 +435,25 @@ const conTimeout = (promesa, ms) => {
   return Promise.race([promesa, limite]).finally(() => clearTimeout(timer));
 };
 
-// Convierte HEIC/HEIF a JPEG. La librería se descarga SOLO cuando hay un HEIC
-// (import dinámico → Vite la separa en su propio chunk, no engorda el bundle).
-// Cualquier fallo degrada al mensaje educativo: nunca cuelga, nunca deja al
-// usuario sin saber qué hacer.
+let _heicTo = null;
+const cargarConvertidorHEIC = () => {
+  if (!_heicTo) _heicTo = import("heic-to/csp").then(m => m.heicTo).catch(e => { _heicTo = null; throw e; });
+  return _heicTo;
+};
+
+// HEIC → ImageBitmap listo para dibujar en canvas (sin pasar por un JPEG intermedio)
 const convertirHEIC = async (file) => {
-  if (!permiteGenerarCodigo()) throw errorHEIC(file.name);
-
-  let heic2any;
+  if (typeof Worker !== "function" || typeof createImageBitmap !== "function") throw errorHEIC(file.name);
+  let heicTo;
   try {
-    heic2any = (await import("heic2any")).default;
+    heicTo = await cargarConvertidorHEIC();
   } catch {
-    throw errorHEIC(file.name);
+    throw new Error("no se pudo descargar el convertidor de fotos HEIC. Revisa tu conexión e inténtalo de nuevo.");
   }
-
   try {
-    const salida = await conTimeout(
-      heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 }),
-      TIMEOUT_HEIC_MS
-    );
-    const blob = Array.isArray(salida) ? salida[0] : salida;
-    if (!blob || !blob.size) throw new Error("CONVERSION_VACIA");
-    return new File([blob], nombreJpg(file.name), { type: "image/jpeg" });
+    const bitmap = await conTimeout(heicTo({ blob: file, type: "bitmap" }), TIMEOUT_HEIC_MS);
+    if (!bitmap || !bitmap.width) throw new Error("CONVERSION_VACIA");
+    return bitmap;
   } catch {
     throw errorHEIC(file.name);
   }
@@ -499,11 +495,25 @@ const comprimirAObjetivo = async (img, maxLado, objetivoKB) => {
 
 // ── Punto de entrada único ──
 // procesarImagen(archivo, "foto" | "portada" | "logo" | "doc") → { blob, dataUrl, ... }
+// Abre cualquier imagen: primero con el navegador (Safari abre HEIC solo) y, si no puede y es
+// HEIC por nombre o por contenido, con el convertidor.
+const abrirImagen = async (file) => {
+  try {
+    return await cargarEnImagen(file);
+  } catch (errorNavegador) {
+    if (esHEIC(file) || await contenidoEsHEIF(file)) return convertirHEIC(file);
+    throw errorNavegador;
+  }
+};
+
 const procesarImagen = async (file, preset = "foto") => {
   const cfg = PRESET_IMG[preset] || PRESET_IMG.foto;
-  const fuente = esHEIC(file) ? await convertirHEIC(file) : file;
-  const img = await cargarEnImagen(fuente);
-  return comprimirAObjetivo(img, cfg.maxLado, cfg.objetivoKB);
+  const img = await abrirImagen(file);
+  try {
+    return await comprimirAObjetivo(img, cfg.maxLado, cfg.objetivoKB);
+  } finally {
+    if (typeof img.close === "function") img.close();   // libera la memoria de la foto decodificada
+  }
 };
 // ═══════════════════════════════════════════════════════════════════════════
 
