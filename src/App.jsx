@@ -1359,11 +1359,12 @@ function UsuarioBadge({ usuario, onLogout, onLogoutTodos }) {
   );
 }
 
-function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre, pendientes }) {
+function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre, pendientes, refPend, refAtrasadas }) {
   const [open, setOpen] = useState(false);
   const NAV = [
     {id:"dashboard", icon:"📊", label:"Dashboard"},
     {id:"ordenes",   icon:"📋", label:"Órdenes"},
+    {id:"refacciones", icon:"📦", label:"Refacciones"+(refPend?" ("+refPend+")":"")+(refAtrasadas?" ⚠":"")},
     {id:"terminadas",icon:"🏁", label:"Terminadas"+(tLen?" ("+tLen+")":"")},
     {id:"historial", icon:"🗂️", label:"Historial"+(hLen?" ("+hLen+")":"")},
     {id:"nueva",     icon:"➕", label:"Nueva Orden"},
@@ -1568,7 +1569,7 @@ function ExportarExcel({ ordenes, S }) {
   const pV=v=>{const p=v.trim().split(" ");const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
   const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||o.fechaPromesaEntrega;if(!b)return"";if(!f)return cDias(b).toString();return Math.max(0,Math.floor((new Date(f)-new Date(b))/86400000)).toString();};
   const COLS=[
-    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:()=>""},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>o.fechaPromesaEntrega||""},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
+    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:o=>{const n=(o.refacciones||[]).reduce((a,r)=>a+cantidadRef(r),0);return n||"";}},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>o.fechaPromesaEntrega||""},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
   ];
   const filt=fuente==="todas"?ordenes:fuente==="activas"?ordenes.filter(o=>!o.fechaCierre&&!o.fechaPago&&!o.fechaTerminado):fuente==="cobradas"?ordenes.filter(o=>!!o.fechaPago):fuente==="terminadas"?ordenes.filter(o=>!!o.fechaTerminado):ordenes.filter(o=>!!o.fechaCierre);
   const esc=v=>{const s=String(v).replace(/\t/g," ");return(s.includes(",")||s.includes('"')||s.includes("\n"))?'"'+s.replace(/"/g,'""')+'"':s;};
@@ -1605,33 +1606,310 @@ function ContadorDias({ o, grande }) {
 
 const REFACCIONES_RAPIDAS = ["Fascia delantera","Fascia trasera","Faro","Calavera","Salpicadera","Cofre","Puerta","Espejo lateral","Parrilla","Parabrisas"];
 
-function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, usuario, S }) {
+// ─── Refacciones: estado, pedido y seguimiento ───────────────────────────────────
+// Como en los sistemas de taller (CCC ONE, Tekmetric): cada refacción va de "por pedir"
+// a "pedida" y a "recibida", con dos desvíos frecuentes: back order (el proveedor no la
+// tiene) y devolución (llegó dañada o equivocada y se repone). El campo "recibida" se
+// sigue guardando igual que antes, así las órdenes existentes se leen sin cambios.
+const ESTADOS_REFACCION = [
+  { key:"por_pedir",  label:"Por pedir",  icono:"🛒", color:"#eb6834" },
+  { key:"pedida",     label:"Pedida",     icono:"📦", color:"#2a78d6" },
+  { key:"back_order", label:"Back order", icono:"⏳", color:"#eda100" },
+  { key:"devolucion", label:"Devolución", icono:"↩️", color:"#6250d6" },
+  { key:"recibida",   label:"Recibida",   icono:"✅", color:"#0ca30c" },
+];
+const ESTADOS_REF_PENDIENTES = ["por_pedir", "pedida", "back_order", "devolucion"];
+const COLOR_ATRASO = "#d03b3b";
+const TEXTO_ATRASO = "hsl(0, 75%, 38%)";
+const infoEstadoRef = k => ESTADOS_REFACCION.find(e => e.key === k) || ESTADOS_REFACCION[0];
+const estadoRefaccion = r => {
+  if (!r) return "por_pedir";
+  if (r.recibida) return "recibida";
+  if (ESTADOS_REF_PENDIENTES.includes(r.estado)) return r.estado;
+  return (r.pedido || r.ordenCompra || r.fechaPedido) ? "pedida" : "por_pedir";
+};
+// Días de atraso: la fecha promesa ya pasó y la refacción no ha llegado
+const diasAtrasoRef = r => (!r || r.recibida || !r.fechaPromesa || r.fechaPromesa >= hoyLocal()) ? 0 : (difDias(r.fechaPromesa, hoyLocal()) || 0);
+// Cambia el estado manteniendo en orden "recibida" y sus fechas
+const conEstadoRef = (r, estado) => estado === "recibida"
+  ? { ...r, estado, recibida: true, fechaRecibida: r.fechaRecibida || hoyLocal() }
+  : { ...r, estado, recibida: false, fechaRecibida: "", ...(estado === "pedida" && !r.fechaPedido ? { fechaPedido: hoyLocal() } : {}) };
+// Al desmarcar "recibida" regresa a pedida (si tiene pedido) o a por pedir
+const estadoAlDesmarcar = r => (r.pedido || r.ordenCompra || r.fechaPedido) ? "pedida" : "por_pedir";
+const MESES_CORTOS = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+const fechaCorta = f => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(f || ""); return m ? `${+m[3]} ${MESES_CORTOS[+m[2] - 1]}` : ""; };
+const cantidadRef = r => Math.max(1, parseInt(r && r.cantidad, 10) || 1);
+
+// Aplica una lista nueva de refacciones a la orden. Si con ella quedan todas recibidas,
+// anota la fecha de "Refacciones completas" (si estaba vacía) y lo registra en la bitácora.
+const ordenConRefacciones = (o, nueva, usuario, nota) => {
+  const antes = o.refacciones || [];
+  const estabaCompleta = antes.length > 0 && antes.every(r => r.recibida);
+  const quedaCompleta = nueva.length > 0 && nueva.every(r => r.recibida);
+  const n = { ...o, refacciones: nueva };
+  const quien = (usuario && usuario.nombre) || "";
+  const entradas = [];
+  if (nota) entradas.push({ accion: nota, usuario: quien, fecha: hoy() });
+  if (quedaCompleta && !estabaCompleta) {
+    if (!o.refaccionesCompletas) n.refaccionesCompletas = hoyLocal();
+    entradas.push({ accion: `Refacciones completas (${nueva.length})`, usuario: quien, fecha: hoy() });
+  }
+  if (entradas.length) n.bitacora = [...(o.bitacora || []), ...entradas];
+  return n;
+};
+
+// Las cifras que muestran el dashboard, la sección Refacciones y el menú
+const resumenRefacciones = ordenes => {
+  const res = { total: 0, pendientes: 0, recibidas: 0, atrasadas: 0, backOrderSinFecha: 0, unidadesEsperando: 0,
+    porEstado: {}, piso: { pendientes: 0, unidades: 0 }, transito: { pendientes: 0, unidades: 0 }, listasReingreso: [] };
+  ESTADOS_REFACCION.forEach(e => { res.porEstado[e.key] = 0; });
+  (ordenes || []).forEach(o => {
+    const lista = o.refacciones || [];
+    if (!lista.length) return;
+    let pend = 0;
+    lista.forEach(r => {
+      const e = estadoRefaccion(r);
+      res.total++; res.porEstado[e]++;
+      if (e === "recibida") { res.recibidas++; return; }
+      pend++; res.pendientes++;
+      if (diasAtrasoRef(r) > 0) res.atrasadas++;
+      if (e === "back_order" && !r.fechaPromesa) res.backOrderSinFecha++;
+    });
+    const lugar = o.enTransito ? res.transito : res.piso;
+    lugar.pendientes += pend;
+    if (pend) { lugar.unidades++; res.unidadesEsperando++; }
+    else if (o.enTransito) res.listasReingreso.push(o);   // en tránsito y ya llegó todo: hay que llamar al cliente
+  });
+  return res;
+};
+
+function ChipEstadoRef({ estado }) {
+  const e = infoEstadoRef(estado);
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:5,background:e.color+"14",border:"0.5px solid "+e.color+"66",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:600,color:BRAND.text,whiteSpace:"nowrap",flexShrink:0}}>
+      <span aria-hidden="true" style={{width:7,height:7,borderRadius:"50%",background:e.color,flexShrink:0}} />{e.label}
+    </span>
+  );
+}
+
+function ChipAtraso({ dias }) {
+  return <span style={{display:"inline-flex",alignItems:"center",gap:4,background:COLOR_ATRASO+"12",border:"0.5px solid "+COLOR_ATRASO+"66",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:700,color:TEXTO_ATRASO,whiteSpace:"nowrap",flexShrink:0}}>⚠ {dias} día{dias !== 1 ? "s" : ""} de atraso</span>;
+}
+
+// Dona de refacciones pendientes por estado: el número del centro es el total pendiente.
+// Al pasar el cursor (o con el teclado) sobre un tramo, el centro muestra ese estado.
+function DonaRefacciones({ segmentos, size = 180, grosor = 18, etiqueta = "pendientes" }) {
+  const [activo, setActivo] = useState(null);
+  const total = segmentos.reduce((a, s) => a + s.valor, 0);
+  const visibles = segmentos.filter(s => s.valor > 0);
+  const cx = size / 2, r = (size - grosor) / 2 - 3, circ = 2 * Math.PI * r;
+  const separacion = visibles.length > 1 ? 2 : 0;   // 2 px de aire entre tramos, sin bordes
+  let acumulado = 0;
+  const arcos = visibles.map(s => { const largo = (s.valor / total) * circ; const a = { ...s, inicio: acumulado, largo }; acumulado += largo; return a; });
+  const sel = arcos.find(a => a.key === activo);
+  const resumen = segmentos.map(s => `${s.label}: ${s.valor}`).join(", ");
+  return (
+    <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${total} refacciones ${etiqueta}. ${resumen}`}>
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke="#EEF0F3" strokeWidth={grosor} />
+        <g transform={`rotate(-90 ${cx} ${cx})`}>
+          {arcos.map(a => (
+            <g key={a.key}>
+              <circle cx={cx} cy={cx} r={r} fill="none" stroke={a.color} strokeWidth={activo === a.key ? grosor + 4 : grosor}
+                strokeDasharray={`${Math.max(0.01, a.largo - separacion)} ${circ}`} strokeDashoffset={-a.inicio}
+                style={{opacity: activo && activo !== a.key ? 0.4 : 1, transition: "opacity 0.15s, stroke-width 0.15s"}} />
+              <circle cx={cx} cy={cx} r={r} fill="none" stroke="transparent" strokeWidth={grosor + 16}
+                strokeDasharray={`${Math.max(0.01, a.largo - separacion)} ${circ}`} strokeDashoffset={-a.inicio}
+                tabIndex={0} aria-label={`${a.label}: ${a.valor}`} style={{cursor:"default",outline:"none"}}
+                onMouseEnter={() => setActivo(a.key)} onMouseLeave={() => setActivo(null)}
+                onFocus={() => setActivo(a.key)} onBlur={() => setActivo(null)}>
+                <title>{`${a.label}: ${a.valor}`}</title>
+              </circle>
+            </g>
+          ))}
+        </g>
+      </svg>
+      <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",pointerEvents:"none"}}>
+        <div style={{fontSize:size >= 160 ? 44 : 30,fontWeight:800,color:BRAND.text,lineHeight:1}}>{sel ? sel.valor : total}</div>
+        <div style={{fontSize:11,color:BRAND.muted,marginTop:5,maxWidth:size - 2 * grosor - 16,lineHeight:1.3}}>
+          {sel ? `${sel.label} · ${Math.round((sel.valor * 100) / total)} %` : total ? etiqueta : "sin pendientes"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Leyenda de la dona: también es la tabla con los números (nada depende solo del color)
+function LeyendaRefacciones({ segmentos, onElegir, activo }) {
+  const total = segmentos.reduce((a, s) => a + s.valor, 0);
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:2,minWidth:0,flex:"1 1 230px"}}>
+      {segmentos.map(s => {
+        const sel = activo === s.key;
+        return (
+          <button key={s.key} type="button" onClick={onElegir ? () => onElegir(s.key) : undefined} aria-pressed={onElegir ? sel : undefined}
+            style={{display:"flex",alignItems:"center",gap:8,background:sel?BRAND.bg:"none",border:"none",borderRadius:8,padding:"6px 8px",cursor:onElegir?"pointer":"default",textAlign:"left",width:"100%"}}>
+            <span aria-hidden="true" style={{width:10,height:10,borderRadius:2,background:s.color,flexShrink:0}} />
+            <span style={{fontSize:12,color:BRAND.text,flex:1,minWidth:0}}>{s.icono} {s.label}</span>
+            <span style={{fontSize:13,fontWeight:700,color:BRAND.text,fontVariantNumeric:"tabular-nums"}}>{s.valor}</span>
+            <span style={{fontSize:11,color:BRAND.muted,width:38,textAlign:"right",fontVariantNumeric:"tabular-nums"}}>{total ? Math.round((s.valor * 100) / total) + " %" : "—"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MedidorRecibidas({ recibidas, total }) {
+  const pct = total ? Math.round((recibidas * 100) / total) : 0;
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:7}}>
+        <span style={{fontSize:12,fontWeight:700,color:BRAND.text}}>✅ Recibidas</span>
+        <span style={{fontSize:12,color:BRAND.muted}}><b style={{fontSize:20,color:BRAND.text}}>{pct} %</b> · {recibidas} de {total}</span>
+      </div>
+      <div role="meter" aria-label="Refacciones recibidas" aria-valuemin={0} aria-valuemax={total} aria-valuenow={recibidas}
+        style={{height:10,background:"#0ca30c24",borderRadius:5,overflow:"hidden"}}>
+        <div style={{height:"100%",width:pct + "%",background:"#0ca30c",borderRadius:5,transition:"width 0.25s"}} />
+      </div>
+    </div>
+  );
+}
+
+// Datos del pedido de una refacción: se editan en un borrador y se guardan con un botón
+const CAMPOS_PEDIDO = [
+  { k:"proveedor",   l:"Proveedor",               ph:"Ej. Refaccionaria del Valle" },
+  { k:"pedido",      l:"No. de pedido",           ph:"Ej. PED-4512" },
+  { k:"ordenCompra", l:"No. de orden de compra",  ph:"Ej. OC-88213" },
+  { k:"numeroParte", l:"No. de parte",            ph:"Ej. 84045632" },
+];
+
+function EditorRefaccion({ r, onGuardar, onCancelar }) {
+  const S = mkS();
+  const [b, setB] = useState(() => ({ nombre: r.nombre || "", cantidad: String(cantidadRef(r)), proveedor: r.proveedor || "", pedido: r.pedido || "",
+    ordenCompra: r.ordenCompra || "", numeroParte: r.numeroParte || "", fechaPedido: r.fechaPedido || "", fechaPromesa: r.fechaPromesa || "", notas: r.notas || "" }));
+  const set = (k, v) => setB(p => ({ ...p, [k]: v }));
+  const guardar = () => {
+    const limpio = Object.fromEntries(Object.entries(b).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v]));
+    let n = { ...r, ...limpio, nombre: limpio.nombre || r.nombre, cantidad: Math.max(1, parseInt(limpio.cantidad, 10) || 1) };
+    if (estadoRefaccion(r) === "por_pedir" && (n.pedido || n.ordenCompra)) n = conEstadoRef(n, "pedida");   // capturar el pedido la marca como pedida
+    onGuardar(n);
+  };
+  return (
+    <div style={{background:BRAND.bg,borderRadius:9,padding:"0.75rem",marginTop:8,display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 72px",gap:8}}>
+        <div><label style={S.label}>Refacción</label><input style={{...S.input,fontSize:12}} value={b.nombre} onChange={e=>set("nombre", e.target.value)} /></div>
+        <div><label style={S.label}>Cantidad</label><input type="number" min="1" style={{...S.input,fontSize:12,textAlign:"center"}} value={b.cantidad} onChange={e=>set("cantidad", e.target.value)} /></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(170px, 1fr))",gap:8}}>
+        {CAMPOS_PEDIDO.map(c => <div key={c.k}><label style={S.label}>{c.l}</label><input style={{...S.input,fontSize:12}} placeholder={c.ph} value={b[c.k]} onChange={e=>set(c.k, e.target.value)} /></div>)}
+        <div><label style={S.label}>Fecha de pedido</label><CampoFecha value={b.fechaPedido} onChange={v=>set("fechaPedido", v)} /></div>
+        <div><label style={S.label}>Fecha promesa de llegada</label><CampoFecha value={b.fechaPromesa} onChange={v=>set("fechaPromesa", v)} /></div>
+      </div>
+      <div><label style={S.label}>Notas</label><input style={{...S.input,fontSize:12}} placeholder="Ej. viene sin soportes; el proveedor confirma el lunes" value={b.notas} onChange={e=>set("notas", e.target.value)} /></div>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+        <button type="button" onClick={onCancelar} style={{...S.btnSm(),fontSize:12,padding:"6px 12px"}}>Cancelar</button>
+        <button type="button" onClick={guardar} style={{...S.btn,fontSize:12,padding:"6px 14px"}}>Guardar</button>
+      </div>
+    </div>
+  );
+}
+
+// Una refacción: estado, datos del pedido, fecha promesa o atraso, y acciones rápidas
+function FilaRefaccion({ r, puedeEdit, onCambiar, onQuitar, encabezado }) {
+  const S = mkS();
+  const [editando, setEditando] = useState(false);
+  const estado = estadoRefaccion(r), atraso = diasAtrasoRef(r), recibida = estado === "recibida";
+  const datos = [r.pedido && `Pedido ${r.pedido}`, r.ordenCompra && `OC ${r.ordenCompra}`, r.proveedor, r.numeroParte && `No. parte ${r.numeroParte}`].filter(Boolean).join(" · ");
+  const fecha = recibida ? (r.fechaRecibida ? `Recibida el ${fechaCorta(r.fechaRecibida)}` : "Recibida")
+    : atraso > 0 ? `Debía llegar el ${fechaCorta(r.fechaPromesa)}`
+    : r.fechaPromesa ? `Llega el ${fechaCorta(r.fechaPromesa)}`
+    : estado === "back_order" ? "Sin fecha promesa: pídela al proveedor"
+    : r.fechaPedido ? `Pedida el ${fechaCorta(r.fechaPedido)}` : "";
+  const alternarRecibida = () => onCambiar(conEstadoRef(r, recibida ? estadoAlDesmarcar(r) : "recibida"));
+  return (
+    <div style={{background:recibida?BRAND.green+"0D":BRAND.card,border:"1px solid "+(atraso>0?COLOR_ATRASO+"66":recibida?BRAND.green+"44":BRAND.border),borderRadius:9,padding:"0.6rem 0.75rem"}}>
+      {encabezado}
+      <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+        <input type="checkbox" checked={recibida} disabled={!puedeEdit} onChange={alternarRecibida} aria-label={`${r.nombre}: recibida`}
+          style={{width:20,height:20,accentColor:BRAND.green,flexShrink:0,marginTop:1,cursor:puedeEdit?"pointer":"default"}} />
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:600,color:recibida?BRAND.muted:BRAND.text,overflowWrap:"anywhere"}}>{r.nombre}{cantidadRef(r) > 1 && <span style={{color:BRAND.accent,fontWeight:700}}> ×{cantidadRef(r)}</span>}</span>
+            <ChipEstadoRef estado={estado} />
+            {atraso > 0 && <ChipAtraso dias={atraso} />}
+          </div>
+          {datos && <div style={{fontSize:11,color:BRAND.muted,marginTop:3,overflowWrap:"anywhere"}}>{datos}</div>}
+          {(fecha || r.notas) && <div style={{fontSize:11,color:atraso>0?TEXTO_ATRASO:BRAND.muted,marginTop:2,overflowWrap:"anywhere"}}>{fecha}{fecha && r.notas ? " · " : ""}{r.notas ? <i>{r.notas}</i> : null}</div>}
+        </div>
+      </div>
+      {puedeEdit && !editando && (
+        <div style={{display:"flex",gap:6,marginTop:8,marginLeft:30,flexWrap:"wrap",alignItems:"center"}}>
+          <select value={estado} onChange={e=>onCambiar(conEstadoRef(r, e.target.value))} aria-label={`Estado de ${r.nombre}`}
+            style={{...S.select,width:"auto",fontSize:11,padding:"4px 8px",borderRadius:7}}>
+            {ESTADOS_REFACCION.map(e => <option key={e.key} value={e.key}>{e.icono} {e.label}</option>)}
+          </select>
+          <button type="button" onClick={()=>setEditando(true)} style={{...S.btnSm(),fontSize:11,padding:"4px 10px"}}>✏️ Datos del pedido</button>
+          {onQuitar && <button type="button" onClick={onQuitar} title="Quitar" aria-label={`Quitar ${r.nombre}`} style={{...S.btnSm(),fontSize:11,padding:"4px 8px",marginLeft:"auto"}}>✕</button>}
+        </div>
+      )}
+      {editando && <EditorRefaccion r={r} onCancelar={()=>setEditando(false)} onGuardar={n=>{ onCambiar(n); setEditando(false); }} />}
+    </div>
+  );
+}
+
+// Registrar UN pedido para varias refacciones a la vez (lo normal: un proveedor, un pedido)
+function RegistrarPedido({ lista, onGuardar, onCancelar }) {
+  const S = mkS();
+  const candidatas = lista.filter(r => ["por_pedir", "devolucion"].includes(estadoRefaccion(r)));
+  const [sel, setSel] = useState(() => new Set(candidatas.filter(r => estadoRefaccion(r) === "por_pedir").map(r => r.id)));
+  const [d, setD] = useState({ proveedor: "", pedido: "", ordenCompra: "", fechaPromesa: "" });
+  const set = (k, v) => setD(p => ({ ...p, [k]: v }));
+  const alternar = id => setSel(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const listo = sel.size > 0 && (d.pedido.trim() || d.ordenCompra.trim() || d.proveedor.trim());
+  return (
+    <div style={{background:BRAND.blue+"0A",border:"1px solid "+BRAND.blue+"33",borderRadius:10,padding:"0.85rem",display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{fontSize:12,fontWeight:700,color:BRAND.blue}}>📦 Registrar pedido</div>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        <div style={{fontSize:11,color:BRAND.muted}}>Refacciones que incluye:</div>
+        {candidatas.map(r => (
+          <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:BRAND.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={sel.has(r.id)} onChange={()=>alternar(r.id)} style={{width:17,height:17,accentColor:BRAND.blue}} />
+            <span>{r.nombre}{cantidadRef(r) > 1 ? ` ×${cantidadRef(r)}` : ""}</span>
+            {estadoRefaccion(r) === "devolucion" && <ChipEstadoRef estado="devolucion" />}
+          </label>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(170px, 1fr))",gap:8}}>
+        {CAMPOS_PEDIDO.filter(c => c.k !== "numeroParte").map(c => <div key={c.k}><label style={S.label}>{c.l}</label><input style={{...S.input,fontSize:12}} placeholder={c.ph} value={d[c.k]} onChange={e=>set(c.k, e.target.value)} /></div>)}
+        <div><label style={S.label}>Fecha promesa de llegada</label><CampoFecha value={d.fechaPromesa} onChange={v=>set("fechaPromesa", v)} /></div>
+      </div>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+        <button type="button" onClick={onCancelar} style={{...S.btnSm(),fontSize:12,padding:"6px 12px"}}>Cancelar</button>
+        <button type="button" disabled={!listo} onClick={()=>onGuardar([...sel], { proveedor: d.proveedor.trim(), pedido: d.pedido.trim(), ordenCompra: d.ordenCompra.trim(), fechaPromesa: d.fechaPromesa })}
+          style={{...S.btn,background:BRAND.blue,fontSize:12,padding:"6px 14px",opacity:listo?1:0.45,cursor:listo?"pointer":"not-allowed"}}>Guardar pedido ({sel.size})</button>
+      </div>
+    </div>
+  );
+}
+
+function ChecklistRefacciones({ o, setOrdenes, setOrdenSel, puedeEdit, usuario, S }) {
   const [txt, setTxt] = useState("");
   const [cant, setCant] = useState("1");
+  const [pidiendo, setPidiendo] = useState(false);
   const lista = o.refacciones || [];
   const total = lista.length;
   const recibidas = lista.filter(r => r.recibida).length;
   const pct = total ? Math.round((recibidas * 100) / total) : 0;
   const completa = total > 0 && recibidas === total;
+  const atrasadas = lista.filter(r => diasAtrasoRef(r) > 0).length;
+  const porPedir = lista.filter(r => ["por_pedir", "devolucion"].includes(estadoRefaccion(r))).length;
 
-  const guardar = (nueva, extra, entrada) => {
-    const upd = ordenes.map(x => {
-      if (x.id !== o.id) return x;
-      const n = { ...x, refacciones: nueva, ...(extra || {}) };
-      if (entrada) n.bitacora = [...(x.bitacora || []), { ...entrada, fecha: hoy() }];
-      return n;
-    });
-    setOrdenes(upd);
-    setOrdenSel(upd.find(x => x.id === o.id));
-  };
-
-  // Al completar la lista, se registra la fecha de "Refacciones completas" de la ficha (si estaba vacía)
-  const aplicar = nueva => {
-    const quedaCompleta = nueva.length > 0 && nueva.every(r => r.recibida);
-    if (quedaCompleta && !completa) {
-      guardar(nueva, o.refaccionesCompletas ? {} : { refaccionesCompletas: hoyLocal() },
-        { accion: `Refacciones completas (${nueva.length})`, usuario: usuario.nombre });
-    } else guardar(nueva);
+  // Siempre sobre la versión más reciente de la orden (dos clics rápidos no se pisan)
+  const aplicar = (cambiarLista, nota) => {
+    const fn = x => ordenConRefacciones(x, cambiarLista(x.refacciones || []), usuario, nota);
+    setOrdenes(prev => prev.map(x => x.id === o.id ? fn(x) : x));
+    setOrdenSel(prev => prev && prev.id === o.id ? fn(prev) : prev);
   };
 
   const agregar = (nombreDirecto) => {
@@ -1639,15 +1917,23 @@ function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, 
     if (!nombre) return;
     if (lista.some(r => r.nombre.toLowerCase() === nombre.toLowerCase())) { alert(`«${nombre}» ya está en la lista.`); return; }
     const cantidad = nombreDirecto ? 1 : Math.max(1, parseInt(cant, 10) || 1);
-    aplicar([...lista, { id: Date.now() + Math.random(), nombre, cantidad, recibida: false, fechaRecibida: "" }]);
+    aplicar(l => [...l, { id: Date.now() + Math.random(), nombre, cantidad, estado: "por_pedir", recibida: false, fechaRecibida: "" }]);
     if (!nombreDirecto) { setTxt(""); setCant("1"); }
   };
-  const alternar = id => aplicar(lista.map(r => r.id === id ? { ...r, recibida: !r.recibida, fechaRecibida: r.recibida ? "" : hoyLocal() } : r));
-  const quitar = id => { if (!confirm("¿Quitar esta refacción de la lista?")) return; aplicar(lista.filter(r => r.id !== id)); };
-  const marcarTodas = () => aplicar(lista.map(r => r.recibida ? r : { ...r, recibida: true, fechaRecibida: hoyLocal() }));
+  const cambiar = n => aplicar(l => l.map(r => r.id === n.id ? n : r));
+  const quitar = id => { if (!confirm("¿Quitar esta refacción de la lista?")) return; aplicar(l => l.filter(r => r.id !== id)); };
+  const marcarTodas = () => aplicar(l => l.map(r => r.recibida ? r : conEstadoRef(r, "recibida")));
+  const registrarPedido = (ids, d) => {
+    const nota = `Pedido registrado: ${ids.length} refacción${ids.length !== 1 ? "es" : ""}` + (d.pedido ? ` · Pedido ${d.pedido}` : "") + (d.ordenCompra ? ` · OC ${d.ordenCompra}` : "") + (d.proveedor ? ` · ${d.proveedor}` : "");
+    aplicar(l => l.map(r => !ids.includes(r.id) ? r : conEstadoRef({ ...r,
+      proveedor: d.proveedor || r.proveedor || "", pedido: d.pedido || r.pedido || "", ordenCompra: d.ordenCompra || r.ordenCompra || "",
+      fechaPromesa: d.fechaPromesa || r.fechaPromesa || "", fechaPedido: hoyLocal() }, "pedida")), nota);
+    setPidiendo(false);
+  };
 
   const colorBarra = completa ? BRAND.green : pct >= 50 ? "#F59E0B" : BRAND.accent;
   const rapidasDisponibles = REFACCIONES_RAPIDAS.filter(n => !lista.some(r => r.nombre.toLowerCase() === n.toLowerCase()));
+  const ordenadas = lista.slice().sort((a, b) => (diasAtrasoRef(b) - diasAtrasoRef(a)) || ((a.recibida ? 1 : 0) - (b.recibida ? 1 : 0)));
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -1659,24 +1945,23 @@ function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, 
         <div style={{height:8,background:BRAND.dimmed+"66",borderRadius:4,overflow:"hidden"}}>
           <div style={{height:"100%",width:pct+"%",background:colorBarra,borderRadius:4,transition:"width 0.25s"}} />
         </div>
-        {completa && <div style={{marginTop:10,fontSize:12,color:BRAND.green,fontWeight:700}}>✓ Todas las refacciones recibidas{o.refaccionesCompletas ? ` · ${o.refaccionesCompletas}` : ""}</div>}
+        {(atrasadas > 0 || porPedir > 0) && !completa && (
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:10}}>
+            {atrasadas > 0 && <span style={{fontSize:11,fontWeight:700,color:TEXTO_ATRASO}}>⚠ {atrasadas} atrasada{atrasadas !== 1 ? "s" : ""}</span>}
+            {porPedir > 0 && <span style={{fontSize:11,fontWeight:600,color:BRAND.muted}}>🛒 {porPedir} sin pedir</span>}
+          </div>
+        )}
+        {completa && <div style={{marginTop:10,fontSize:12,color:BRAND.green,fontWeight:700}}>✓ Todas las refacciones recibidas{o.refaccionesCompletas ? ` · ${o.refaccionesCompletas}` : ""}{o.enTransito ? " · la unidad está en tránsito: avisa al cliente para su reingreso" : ""}</div>}
       </div>
 
       <div style={{display:"flex",flexDirection:"column",gap:6}}>
         {total === 0 && <div style={{textAlign:"center",color:BRAND.muted,fontSize:12,padding:"1.25rem 0"}}>Sin refacciones registradas</div>}
-        {lista.map(r => (
-          <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,background:r.recibida?BRAND.green+"0F":BRAND.card,border:"1px solid "+(r.recibida?BRAND.green+"44":BRAND.border),borderRadius:9,padding:"0.55rem 0.75rem"}}>
-            <label style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0,cursor:puedeEdit?"pointer":"default"}}>
-              <input type="checkbox" checked={!!r.recibida} disabled={!puedeEdit} onChange={()=>alternar(r.id)} style={{width:20,height:20,accentColor:BRAND.green,flexShrink:0,cursor:puedeEdit?"pointer":"default"}} />
-              <span style={{flex:1,minWidth:0}}>
-                <span style={{display:"block",fontSize:13,fontWeight:600,color:r.recibida?BRAND.muted:BRAND.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nombre}{r.cantidad > 1 && <span style={{color:BRAND.accent,fontWeight:700}}> ×{r.cantidad}</span>}</span>
-                <span style={{display:"block",fontSize:10,color:r.recibida?BRAND.green:BRAND.muted}}>{r.recibida ? `Recibida${r.fechaRecibida ? " · " + r.fechaRecibida : ""}` : "Pendiente"}</span>
-              </span>
-            </label>
-            {puedeEdit && <button onClick={()=>quitar(r.id)} title="Quitar" style={{...S.btnSm(),fontSize:11,padding:"3px 8px",flexShrink:0}}>✕</button>}
-          </div>
-        ))}
+        {ordenadas.map(r => <FilaRefaccion key={r.id} r={r} puedeEdit={puedeEdit} onCambiar={cambiar} onQuitar={()=>quitar(r.id)} />)}
       </div>
+
+      {puedeEdit && porPedir > 0 && (pidiendo
+        ? <RegistrarPedido lista={lista} onGuardar={registrarPedido} onCancelar={()=>setPidiendo(false)} />
+        : <button type="button" onClick={()=>setPidiendo(true)} style={{background:BRAND.blue+"0D",border:"1px dashed "+BRAND.blue,color:BRAND.blue,borderRadius:8,padding:"8px",fontSize:12,fontWeight:700,cursor:"pointer"}}>📦 Registrar pedido ({porPedir} sin pedir)</button>)}
 
       {puedeEdit && total > 0 && !completa && (
         <button onClick={marcarTodas} style={{background:"none",border:"1px dashed "+BRAND.green,color:BRAND.green,borderRadius:8,padding:"7px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Marcar todas como recibidas</button>
@@ -1696,6 +1981,217 @@ function ChecklistRefacciones({ o, ordenes, setOrdenes, setOrdenSel, puedeEdit, 
               {rapidasDisponibles.map(n => <button key={n} onClick={()=>agregar(n)} style={{fontSize:11,background:"#fff",border:"1px solid "+BRAND.border,color:BRAND.muted,borderRadius:20,padding:"3px 10px",cursor:"pointer"}}>+ {n}</button>)}
             </div>
           </>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sección Refacciones (menú lateral) ───────────────────────────────────────────
+const ORDEN_FILAS_REF = { devolucion: 0, back_order: 1, por_pedir: 2, pedida: 3, recibida: 4 };
+const FILTROS_ESTADO_REF = [
+  { k:"pendientes", l:"Pendientes" }, { k:"por_pedir", l:"🛒 Por pedir" }, { k:"pedida", l:"📦 Pedidas" },
+  { k:"back_order", l:"⏳ Back order" }, { k:"devolucion", l:"↩️ Devolución" }, { k:"atrasadas", l:"⚠ Atrasadas" },
+  { k:"recibida", l:"✅ Recibidas" }, { k:"todas", l:"Todas" },
+];
+
+function TarjetaCifra({ icono, titulo, valor, detalle, color, onClick, activo }) {
+  const S = mkS();
+  return (
+    <button type="button" onClick={onClick} disabled={!onClick}
+      style={{...S.metric,textAlign:"left",padding:"0.8rem 0.9rem",cursor:onClick?"pointer":"default",border:"1px solid "+(activo?color:BRAND.border),display:"flex",flexDirection:"column",gap:2,minWidth:0,font:"inherit"}}>
+      <span style={{fontSize:11,color:BRAND.muted,fontWeight:600}}>{icono} {titulo}</span>
+      <span style={{fontSize:24,fontWeight:800,color:BRAND.text,lineHeight:1.15}}>{valor}</span>
+      {detalle && <span style={{fontSize:11,color:color === COLOR_ATRASO && valor ? TEXTO_ATRASO : BRAND.muted}}>{detalle}</span>}
+    </button>
+  );
+}
+
+function SeccionRefacciones({ ordenes, desktop, puedeEdit, onCambiar, onAbrirOrden, filtroInicial }) {
+  const S = mkS();
+  const [ubicacion, setUbicacion] = useState("todas");
+  const [estadoF, setEstadoF] = useState(filtroInicial || "pendientes");
+  const [busca, setBusca] = useState("");
+  const [agrupar, setAgrupar] = useState("orden");
+  const resTodas = resumenRefacciones(ordenes);
+  const enUbicacion = ordenes.filter(o => ubicacion === "todas" || (ubicacion === "transito" ? o.enTransito : !o.enTransito));
+  const res = resumenRefacciones(enUbicacion);
+  const segmentos = ESTADOS_REF_PENDIENTES.map(k => ({ ...infoEstadoRef(k), valor: res.porEstado[k] }));
+
+  const q = busca.trim().toLowerCase();
+  const pasaEstado = r => {
+    const e = estadoRefaccion(r);
+    if (estadoF === "todas") return true;
+    if (estadoF === "pendientes") return e !== "recibida";
+    if (estadoF === "atrasadas") return diasAtrasoRef(r) > 0;
+    return e === estadoF;
+  };
+  const pasaBusqueda = (o, r) => !q || [r.nombre, r.numeroParte, r.pedido, r.ordenCompra, r.proveedor, r.notas, o.id, o.cliente, o.vehiculo, o.placa, o.siniestro]
+    .some(v => String(v || "").toLowerCase().includes(q));
+  const filas = enUbicacion.flatMap(o => (o.refacciones || []).filter(r => pasaEstado(r) && pasaBusqueda(o, r)).map(r => ({ o, r })));
+  const ordenarFilas = (a, b) => (diasAtrasoRef(b.r) - diasAtrasoRef(a.r)) || (ORDEN_FILAS_REF[estadoRefaccion(a.r)] - ORDEN_FILAS_REF[estadoRefaccion(b.r)]) || String(a.r.nombre).localeCompare(String(b.r.nombre));
+  const grupos = new Map();
+  filas.forEach(f => {
+    const k = agrupar === "orden" ? f.o.id : ((f.r.proveedor || "").trim() || "Sin proveedor");
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(f);
+  });
+  const listaGrupos = [...grupos.entries()]
+    .map(([k, fs]) => ({ k, filas: fs.sort(ordenarFilas), atraso: Math.max(0, ...fs.map(f => diasAtrasoRef(f.r))) }))
+    .sort((a, b) => ((a.k === "Sin proveedor") - (b.k === "Sin proveedor")) || (b.atraso - a.atraso) || (b.filas.length - a.filas.length) || a.k.localeCompare(b.k));
+
+  const opcionesUbicacion = [
+    { k:"todas", l:"Todas", d:`${resTodas.pendientes} pendientes` },
+    { k:"piso", l:"🔧 En piso", d:`${resTodas.piso.pendientes} pendientes · ${resTodas.piso.unidades} unidad${resTodas.piso.unidades !== 1 ? "es" : ""}` },
+    { k:"transito", l:"🚗 En tránsito", d:`${resTodas.transito.pendientes} pendientes · ${resTodas.transito.unidades} unidad${resTodas.transito.unidades !== 1 ? "es" : ""}` },
+  ];
+  const vacio = estadoF === "pendientes" && !q
+    ? (res.total ? "No hay refacciones pendientes aquí. 🎉" : "No hay refacciones registradas en estas órdenes. Agrégalas en la pestaña 🔧 Refacciones de cada orden.")
+    : "Ninguna refacción coincide con el filtro.";
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div role="group" aria-label="Ubicación de la unidad" style={{display:"grid",gridTemplateColumns:desktop?"repeat(3, minmax(0, 220px))":"repeat(3, minmax(0, 1fr))",gap:6}}>
+        {opcionesUbicacion.map(op => { const sel = ubicacion === op.k; return (
+          <button key={op.k} type="button" aria-pressed={sel} onClick={()=>setUbicacion(op.k)}
+            style={{textAlign:"left",border:"1px solid "+(sel?BRAND.accent:BRAND.border),background:sel?BRAND.accent+"0D":BRAND.card,borderRadius:10,padding:"8px 10px",cursor:"pointer",minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:700,color:sel?BRAND.accent:BRAND.text}}>{op.l}</div>
+            <div style={{fontSize:10,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:desktop?"nowrap":"normal"}}>{op.d}</div>
+          </button>); })}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:desktop?"minmax(0, 1.1fr) minmax(0, 1fr)":"1fr",gap:12,alignItems:"stretch"}}>
+        <div style={S.card}>
+          <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:2}}>Refacciones pendientes</div>
+          <div style={{fontSize:11,color:BRAND.muted,marginBottom:12}}>De {res.unidadesEsperando} unidad{res.unidadesEsperando !== 1 ? "es" : ""} que esperan piezas · toca un estado para ver solo esas</div>
+          <div style={{display:"flex",alignItems:"center",gap:18,flexWrap:"wrap",justifyContent:"center"}}>
+            <DonaRefacciones segmentos={segmentos} size={desktop ? 184 : 168} />
+            <LeyendaRefacciones segmentos={segmentos} activo={estadoF} onElegir={k=>setEstadoF(estadoF === k ? "pendientes" : k)} />
+          </div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={S.card}><MedidorRecibidas recibidas={res.recibidas} total={res.total} /></div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2, minmax(0, 1fr))",gap:10}}>
+            <TarjetaCifra icono="⚠" titulo="Atrasadas" valor={res.atrasadas} color={COLOR_ATRASO} activo={estadoF === "atrasadas"}
+              detalle={res.atrasadas ? "ya pasó su fecha promesa" : "ninguna fuera de fecha"} onClick={()=>setEstadoF(estadoF === "atrasadas" ? "pendientes" : "atrasadas")} />
+            <TarjetaCifra icono="⏳" titulo="Back order" valor={res.porEstado.back_order} color="#eda100" activo={estadoF === "back_order"}
+              detalle={res.backOrderSinFecha ? `${res.backOrderSinFecha} sin fecha promesa` : "con fecha promesa"} onClick={()=>setEstadoF(estadoF === "back_order" ? "pendientes" : "back_order")} />
+            <TarjetaCifra icono="🛒" titulo="Por pedir" valor={res.porEstado.por_pedir} color="#eb6834" activo={estadoF === "por_pedir"}
+              detalle="aún sin pedido" onClick={()=>setEstadoF(estadoF === "por_pedir" ? "pendientes" : "por_pedir")} />
+            <TarjetaCifra icono="🚗" titulo="Listas para reingreso" valor={res.listasReingreso.length} color={BRAND.blue}
+              detalle={res.listasReingreso.length ? "en tránsito con todo recibido" : "ninguna por ahora"} />
+          </div>
+        </div>
+      </div>
+
+      {res.listasReingreso.length > 0 && (
+        <div style={{background:BRAND.blue+"10",border:"1px solid "+BRAND.blue+"44",borderRadius:10,padding:"10px 14px"}}>
+          <div style={{fontSize:13,fontWeight:700,color:BRAND.blue,marginBottom:6}}>🚗 Ya llegaron todas sus refacciones: llama al cliente para el reingreso</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {res.listasReingreso.map(o => (
+              <button key={o.id} type="button" onClick={()=>onAbrirOrden(o)} style={{background:"#fff",border:"1px solid "+BRAND.blue+"55",borderRadius:20,padding:"4px 10px",fontSize:12,cursor:"pointer",color:BRAND.text}}>
+                <b style={{color:BRAND.blue}}>{o.id}</b> · {o.cliente}{o.telefono ? ` · 📞 ${o.telefono}` : ""}
+              </button>))}
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center",marginBottom:10}}>
+          <input style={{...S.input,flex:"1 1 220px",fontSize:12}} placeholder="Buscar refacción, pedido, OC, proveedor, OT o placa…" value={busca} onChange={e=>setBusca(e.target.value)} />
+          <div role="group" aria-label="Agrupar" style={{display:"inline-flex",background:BRAND.bg,border:"1px solid "+BRAND.border,borderRadius:9,padding:2,gap:2,flexShrink:0}}>
+            {[{k:"orden",l:"Por orden"},{k:"proveedor",l:"Por proveedor"}].map(op => { const sel = agrupar === op.k; return (
+              <button key={op.k} type="button" aria-pressed={sel} onClick={()=>setAgrupar(op.k)}
+                style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(16,24,40,0.12)":"none"}}>{op.l}</button>); })}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+          {FILTROS_ESTADO_REF.map(f => { const sel = estadoF === f.k; return (
+            <button key={f.k} type="button" aria-pressed={sel} onClick={()=>setEstadoF(f.k)}
+              style={{border:"1px solid "+(sel?BRAND.accent:BRAND.border),background:sel?BRAND.accent+"12":"#fff",color:sel?BRAND.accent:BRAND.muted,borderRadius:20,padding:"4px 11px",fontSize:11,fontWeight:sel?700:500,cursor:"pointer"}}>{f.l}</button>); })}
+        </div>
+
+        {listaGrupos.length === 0 && <div style={{textAlign:"center",color:BRAND.muted,fontSize:12,padding:"2rem 1rem"}}>{vacio}</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {listaGrupos.map(g => {
+            const o = agrupar === "orden" ? g.filas[0].o : null;
+            const todas = o ? (o.refacciones || []) : [];
+            const rec = todas.filter(r => r.recibida).length;
+            return (
+              <div key={g.k} style={{border:"1px solid "+BRAND.border,borderRadius:12,overflow:"hidden"}}>
+                {o ? (
+                  <button type="button" onClick={()=>onAbrirOrden(o)} title="Abrir la orden"
+                    style={{width:"100%",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:BRAND.bg,border:"none",borderBottom:"1px solid "+BRAND.border,padding:"9px 12px",cursor:"pointer",textAlign:"left"}}>
+                    <span style={{fontSize:12,fontWeight:800,color:BRAND.accent}}>{o.id}</span>
+                    <span style={{fontSize:12,fontWeight:600,color:BRAND.text,minWidth:0}}>{o.cliente}</span>
+                    <span style={{fontSize:11,color:BRAND.muted,minWidth:0}}>{[o.vehiculo, o.placa].filter(Boolean).join(" · ")}</span>
+                    <span style={{fontSize:10,fontWeight:600,borderRadius:5,padding:"2px 7px",background:o.enTransito?BRAND.blue+"12":BRAND.accent+"10",color:o.enTransito?BRAND.blue:BRAND.accent}}>
+                      {o.enTransito ? `🚗 Tránsito${diasEnTransito(o) !== null ? " · " + diasEnTransito(o) + " d" : ""}` : "🔧 En piso"}</span>
+                    <span style={{marginLeft:"auto",fontSize:11,color:BRAND.muted,whiteSpace:"nowrap"}}>{rec} de {todas.length} recibidas · Abrir →</span>
+                  </button>
+                ) : (
+                  <div style={{display:"flex",alignItems:"center",gap:10,background:BRAND.bg,borderBottom:"1px solid "+BRAND.border,padding:"9px 12px"}}>
+                    <span style={{fontSize:12,fontWeight:800,color:BRAND.text}}>🏪 {g.k}</span>
+                    <span style={{marginLeft:"auto",fontSize:11,color:BRAND.muted}}>{g.filas.length} refacci{g.filas.length !== 1 ? "ones" : "ón"}</span>
+                  </div>
+                )}
+                <div style={{display:"flex",flexDirection:"column",gap:6,padding:8}}>
+                  {g.filas.map(({ o: ord, r }) => (
+                    <FilaRefaccion key={ord.id + "·" + r.id} r={r} puedeEdit={puedeEdit} onCambiar={n=>onCambiar(ord.id, n)}
+                      encabezado={agrupar === "proveedor" ? (
+                        <button type="button" onClick={()=>onAbrirOrden(ord)} style={{display:"block",background:"none",border:"none",padding:0,marginBottom:4,cursor:"pointer",fontSize:11,color:BRAND.muted,textAlign:"left"}}>
+                          <b style={{color:BRAND.accent}}>{ord.id}</b> · {ord.cliente} · {ord.enTransito ? "🚗 Tránsito" : "🔧 En piso"}
+                        </button>) : null} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Resumen para el dashboard: lo esencial y un acceso directo a la sección
+function ResumenRefaccionesDashboard({ ordenes, desktop, onIr }) {
+  const S = mkS();
+  const res = resumenRefacciones(ordenes);
+  const segmentos = ESTADOS_REF_PENDIENTES.map(k => ({ ...infoEstadoRef(k), valor: res.porEstado[k] }));
+  const linea = (icono, texto, valor, extra, color, onClick) => (
+    <button type="button" onClick={onClick} disabled={!onClick}
+      style={{display:"flex",alignItems:"center",gap:8,width:"100%",background:"none",border:"none",borderBottom:"0.5px solid "+BRAND.border,padding:"7px 2px",cursor:onClick?"pointer":"default",textAlign:"left"}}>
+      <span style={{fontSize:14,width:20,textAlign:"center",flexShrink:0}}>{icono}</span>
+      <span style={{fontSize:12,color:color || BRAND.text,flex:1,minWidth:0}}>{texto}{extra ? <span style={{color:BRAND.muted}}> · {extra}</span> : null}</span>
+      <span style={{fontSize:15,fontWeight:800,color:color || BRAND.text}}>{valor}</span>
+    </button>
+  );
+  return (
+    <div style={S.card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:res.total?10:4}}>
+        <div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>📦 Refacciones <span style={{fontSize:11,color:BRAND.muted,fontWeight:400}}>{res.total ? `(${res.pendientes} pendientes de ${res.total})` : ""}</span></div>
+        <button type="button" onClick={()=>onIr()} style={{...S.btnSm(),fontSize:11,flexShrink:0}}>Ver refacciones →</button>
+      </div>
+      {!res.total ? (
+        <div style={{fontSize:12,color:BRAND.muted}}>Aún no hay refacciones en las órdenes activas. Agrégalas en la pestaña 🔧 Refacciones de cada orden y aquí verás cuántas faltan, cuáles están atrasadas y qué unidades ya pueden regresar.</div>
+      ) : (
+        <div style={{display:"flex",alignItems:"center",gap:18,flexWrap:"wrap",justifyContent:"center"}}>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10,flexShrink:0}}>
+            <DonaRefacciones segmentos={segmentos} size={132} grosor={14} />
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2, auto)",gap:"4px 12px"}}>
+              {segmentos.map(sg => (
+                <span key={sg.key} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:BRAND.text,whiteSpace:"nowrap"}}>
+                  <span aria-hidden="true" style={{width:8,height:8,borderRadius:2,background:sg.color,flexShrink:0}} />{sg.label} <b>{sg.valor}</b>
+                </span>))}
+            </div>
+          </div>
+          <div style={{flex:"1 1 240px",minWidth:0}}>
+            {linea("🔧", "En piso", res.piso.pendientes, `${res.piso.unidades} unidad${res.piso.unidades !== 1 ? "es" : ""}`, null, ()=>onIr())}
+            {linea("🚗", "En tránsito", res.transito.pendientes, `${res.transito.unidades} unidad${res.transito.unidades !== 1 ? "es" : ""}`, null, ()=>onIr())}
+            {linea("⚠", "Atrasadas", res.atrasadas, res.atrasadas ? "fecha promesa vencida" : null, res.atrasadas ? TEXTO_ATRASO : null, ()=>onIr("atrasadas"))}
+            {linea("⏳", "Back order", res.porEstado.back_order, res.backOrderSinFecha ? `${res.backOrderSinFecha} sin fecha` : null, null, ()=>onIr("back_order"))}
+            {res.listasReingreso.length > 0 && linea("✅", "Listas para reingreso", res.listasReingreso.length, "llama al cliente", BRAND.blue, ()=>onIr())}
+          </div>
         </div>
       )}
     </div>
@@ -1805,7 +2301,7 @@ function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
         <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:BRAND.accent}}>{o.id}</span><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.cliente}</span></div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.vehiculo}</div></div>
         {badge?<span style={{flexShrink:0,background:BRAND.muted+"22",color:BRAND.muted,borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:600}}>{badge}</span>:<span style={{flexShrink:0,background:e.color+"18",color:e.color,border:"0.5px solid "+e.color+"44",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:500}}>{e.label}</span>}
       </div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{o.enTransito&&(()=>{ const dT=diasEnTransito(o); return <span style={{fontSize:10,background:BRAND.blue+"12",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"44",borderRadius:5,padding:"2px 7px",fontWeight:600}}>🚗 Tránsito{dT!==null?` · ${dT} d`:""}</span>; })()}{o.llegada==="grua"&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>🚛 Grúa</span>}{(o.refacciones||[]).length>0&&<span style={{fontSize:10,background:BRAND.bg,color:(o.refacciones.every(r=>r.recibida)?BRAND.green:BRAND.muted),borderRadius:5,padding:"2px 7px",fontWeight:600}}>🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{o.enTransito&&(()=>{ const dT=diasEnTransito(o); return <span style={{fontSize:10,background:BRAND.blue+"12",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"44",borderRadius:5,padding:"2px 7px",fontWeight:600}}>🚗 Tránsito{dT!==null?` · ${dT} d`:""}</span>; })()}{o.llegada==="grua"&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>🚛 Grúa</span>}{(o.refacciones||[]).length>0&&(()=>{ const atr=o.refacciones.some(r=>diasAtrasoRef(r)>0); const todas=o.refacciones.every(r=>r.recibida); return <span title={atr?"Hay refacciones atrasadas":undefined} style={{fontSize:10,background:atr?COLOR_ATRASO+"12":BRAND.bg,color:atr?TEXTO_ATRASO:(todas?BRAND.green:BRAND.muted),border:atr?"0.5px solid "+COLOR_ATRASO+"55":"none",borderRadius:5,padding:"2px 7px",fontWeight:600}}>{atr?"⚠ ":""}🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>; })()}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
       <div style={{display:"flex",gap:2}}>{PASOS.map((p,j)=><div key={p} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}><div style={{height:3,width:"100%",borderRadius:2,background:j<idx?BRAND.accent:j===idx?BRAND.accent+"55":BRAND.dimmed}} /><span style={{fontSize:8,color:j===idx?BRAND.accent:j<idx?BRAND.muted:BRAND.dimmed,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%",textAlign:"center"}}>{ESTADOS[j].label.split(" ")[0]}</span></div>)}</div>
     </div>
   );
@@ -2011,6 +2507,7 @@ export default function App() {
   const [busqueda,setBusqueda]=useState("");
   const [gBusqueda,setGBusqueda]=useState("");
   const [pagina,setPagina]=useState(1);
+  const [refFiltro,setRefFiltro]=useState({ estado:"pendientes", n:0 });   // filtro con el que se abre la sección Refacciones
   const [ordenLista,setOrdenLista]=useState(()=>{ try { return localStorage.getItem("repairx_orden_lista")==="antiguas"?"antiguas":"recientes"; } catch(_){ return "recientes"; } });
   const [fotoAmpliada,setFotoAmpliada]=useState(null);
   const [docTipo,setDocTipo]=useState("inventario");
@@ -2259,6 +2756,20 @@ export default function App() {
 
   const pendientesEquipo = puedePerm(usuario,"todo") ? usuarios.filter(u=>u.rol==="pendiente").length : 0;
 
+  // ─── Refacciones de las órdenes activas ─────────────────────────────────────
+  const resRef = resumenRefacciones(ordenes);
+  const irARefacciones = estado => { setRefFiltro({ estado: estado || "pendientes", n: Date.now() }); setVista("refacciones"); setOrdenSel(null); setGBusqueda(""); };
+  const abrirOrdenRefacciones = o => { setOrdenSel(o); setTabDetalle("refacciones"); setVista("ordenes"); setSubVista("activas"); };
+  const cambiarRefaccion = (ordenId, n) => {
+    const fn = o => ordenConRefacciones(o, (o.refacciones || []).map(r => r.id === n.id ? n : r), usuario);
+    setOrdenes(prev => prev.map(o => o.id === ordenId ? fn(o) : o));
+    setOrdenSel(prev => prev && prev.id === ordenId ? fn(prev) : prev);
+  };
+  const renderRefacciones = () => (
+    <SeccionRefacciones key={refFiltro.n} filtroInicial={refFiltro.estado} ordenes={ordenes} desktop={desktop}
+      puedeEdit={puedePerm(usuario, "editar_ordenes")} onCambiar={cambiarRefaccion} onAbrirOrden={abrirOrdenRefacciones} />
+  );
+
   const estObj=key=>ESTADOS.find(e=>e.key===key)||ESTADOS[0];
   const totalAct=ordenes.length;
   const totCobro=ordenesCobro.reduce((a,o)=>a+Math.max(0,(o.costo||0)-(o.descuento||0)),0);
@@ -2282,7 +2793,7 @@ export default function App() {
 
   const resultadosGlobales=(()=>{
     const q=gBusqueda.trim().toLowerCase(); if(!q)return [];
-    const match=o=>[o.id,o.cliente,o.vehiculo,o.placa,o.siniestro,o.serie,o.telefono].some(v=>String(v||"").toLowerCase().includes(q));
+    const match=o=>[o.id,o.cliente,o.vehiculo,o.placa,o.siniestro,o.serie,o.telefono,...(o.refacciones||[]).flatMap(r=>[r.nombre,r.pedido,r.ordenCompra,r.proveedor,r.numeroParte])].some(v=>String(v||"").toLowerCase().includes(q));
     const tag=(arr,origen,dest,sub)=>arr.filter(match).map(o=>({o,origen,dest,sub}));
     return [
       ...tag(ordenes,"Activa","ordenes","activas"),
@@ -2503,6 +3014,7 @@ export default function App() {
           <span style={{fontSize:13,color:"hsl(0, 75%, 40%)",fontWeight:700}}>⚠ {n} {n===1?"orden lleva":"órdenes llevan"} más de {DIAS_ALERTA} días desde su alta</span>
           <span style={{fontSize:12,color:"hsl(0, 75%, 40%)",fontWeight:600,flexShrink:0}}>Ver →</span>
         </div>); })()}
+      <ResumenRefaccionesDashboard ordenes={ordenes} desktop={desktop} onIr={irARefacciones} />
       <div style={S.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
           <div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>Unidades del taller <span style={{fontSize:11,color:BRAND.muted,fontWeight:400}}>({activas.length} {activas.length===1?"orden activa":"órdenes activas"})</span></div>
@@ -2745,7 +3257,7 @@ export default function App() {
     );
   };
 
-  const titulos={dashboard:"",ordenes:"Órdenes de Trabajo",historial:"Historial",nueva:"Nueva Orden",terminadas:"Siniestros Terminados",exportar:"Exportar a Excel",equipo:"Equipo"};
+  const titulos={dashboard:"",ordenes:"Órdenes de Trabajo",refacciones:"Refacciones",historial:"Historial",nueva:"Nueva Orden",terminadas:"Siniestros Terminados",exportar:"Exportar a Excel",equipo:"Equipo"};
 
   return (
     <div style={{fontFamily:FUENTE_APP,minHeight:"100vh",width:"100%",background:BRAND.bg,color:BRAND.text}}>
@@ -2755,7 +3267,7 @@ export default function App() {
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
       {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><ImagenArchivo item={fotoAmpliada} token={usuario?.token} alt={fotoAmpliada.nombre} style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
-      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} />
+      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} refPend={resRef.pendientes} refAtrasadas={resRef.atrasadas} />
       <div style={{marginLeft:desktop?240:0,display:"flex",flexDirection:"column",minHeight:"100vh",minWidth:0}}>
         <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
           <div style={{padding:desktop?"0 1rem":"0 1rem 0 58px",minHeight:48,borderBottom:"0.5px solid "+BRAND.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:BRAND.card}}>
@@ -2784,6 +3296,7 @@ export default function App() {
                 {vista==="historial"  && renderHistorial()}
                 {vista==="nueva"      && renderNuevaOrden()}
                 {vista==="equipo"     && puedePerm(usuario,"todo") && renderEquipo()}
+                {vista==="refacciones" && renderRefacciones()}
                 {vista==="exportar"   && <ExportarExcel ordenes={[...ordenes,...ordenesCobro,...ordenesCobradas,...ordenesTerminadas,...historial]} S={S} />}
               </>}
         </div>
