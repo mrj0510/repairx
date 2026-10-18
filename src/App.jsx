@@ -83,6 +83,12 @@ const traducirErrorAuth = (data, status) => {
 // Supabase recibe el token del captcha dentro de gotrue_meta_security
 const conCaptcha = token => token ? { gotrue_meta_security: { captcha_token: token } } : {};
 
+// Corta una petición que no responde (red caída a medias) para poder reintentar
+const limiteDeTiempo = ms => {
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal;
+};
+
 const supaAuth = {
   signIn: async (email, password, captcha) => {
     try {
@@ -133,17 +139,31 @@ const supaAuth = {
       return { ok: true };
     } catch { return { error: "No se pudo conectar con el servidor." }; }
   },
-  signOut: async (token) => { try { await fetch(SUPA_URL + "/auth/v1/logout", { method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+token } }); } catch (_) {} },
+  // alcance "local": solo esta sesión (este navegador) · "global": todos los dispositivos de la cuenta.
+  // Devuelve true si el servidor la aceptó.
+  signOut: async (token, alcance = "local") => {
+    try {
+      const r = await fetch(SUPA_URL + "/auth/v1/logout?scope=" + alcance, {
+        method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+token },
+        signal: limiteDeTiempo(15000),
+      });
+      return r.ok;
+    } catch (_) { return false; }
+  },
+  // Renueva la sesión. Si falla, `definitivo` dice si la llave ya no sirve (hay que volver a entrar)
+  // o si fue un problema pasajero (sin internet, servidor ocupado) y conviene reintentar.
   refreshSession: async (refreshToken) => {
     try {
       const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=refresh_token", {
         method:"POST", headers:{ "Content-Type":"application/json","apikey":SUPA_KEY },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        signal: limiteDeTiempo(15000),
       });
-      const data = await r.json();
-      if (data.error) return { error: data.error };
-      return { session: data };
-    } catch { return { error: "Error al refrescar sesión." }; }
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data.access_token) return { session: data };
+      const definitivo = r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429;
+      return { error: traducirErrorAuth(data, r.status), definitivo };
+    } catch { return { error: "No se pudo conectar con el servidor.", definitivo: false }; }
   },
 };
 
@@ -700,7 +720,18 @@ function useDesktop(bp=900) {
 }
 
 const SESION_KEY = "repairx_sesion";
-const guardarSesion = u => { try { localStorage.setItem(SESION_KEY, JSON.stringify(u)); } catch(_){} };
+// Guarda la sesión de esta pestaña sin regresar nunca a una llave más vieja que la guardada
+// (otra pestaña pudo haberla renovado mientras tanto).
+const guardarSesion = u => {
+  try {
+    const previa = leerSesion();
+    const datos = previa && u && previa.id === u.id && previa.refreshToken && (previa.expiresAt || 0) > (u.expiresAt || 0)
+      ? { ...u, token: previa.token, refreshToken: previa.refreshToken, expiresAt: previa.expiresAt }
+      : u;
+    const texto = JSON.stringify(datos);
+    if (localStorage.getItem(SESION_KEY) !== texto) localStorage.setItem(SESION_KEY, texto);
+  } catch (_) {}
+};
 const leerSesion   = () => { try { const s=localStorage.getItem(SESION_KEY); return s?JSON.parse(s):null; } catch(_){ return null; } };
 // Los enlaces de Supabase regresan a la app con los datos en la URL:
 //   #access_token=...&type=recovery          (enlace válido)
@@ -720,6 +751,65 @@ const leerHashAuth = () => {
 const limpiarHash = () => { try { window.history.replaceState(null, "", window.location.pathname); } catch (_) {} };
 
 const borrarSesion = () => { try { localStorage.removeItem(SESION_KEY); } catch(_){} };
+
+// ─── Sesión compartida entre pestañas ────────────────────────────────────────────
+// Todas las pestañas usan la sesión guardada en este navegador. Supabase entrega una llave de
+// renovación nueva cada vez y, si alguien vuelve a usar una llave vieja, cierra la sesión completa
+// (lo trata como un robo). Por eso las pestañas se turnan para renovar (navigator.locks) y, antes
+// de hacerlo, leen la llave más reciente: si otra pestaña ya renovó, usan la suya sin pedir nada.
+const RENOVAR_SESION_ANTES_MS = 2 * 60 * 1000;   // se renueva cuando a la llave le quedan menos de 2 minutos
+const REVISAR_SESION_MS = 30 * 1000;
+const INACTIVIDAD_MAX_MS = 12 * 60 * 60 * 1000;  // 12 horas sin usar la app: se cierra la sesión
+const ACTIVIDAD_KEY = "repairx_ultima_actividad"; // compartida: usar cualquier pestaña cuenta para todas
+const CIERRE_KEY = "repairx_cierre";              // por qué se cerró la sesión, para avisar en las demás pestañas
+const MENSAJES_CIERRE = {
+  inactividad: "Se cerró tu sesión después de 12 horas sin uso. Vuelve a iniciar sesión.",
+  vencida:     "Tu sesión terminó. Vuelve a iniciar sesión.",
+  todos:       "Cerraste la sesión en todos tus dispositivos.",
+};
+
+const sesionVigente = (u, margen = RENOVAR_SESION_ANTES_MS) => !!(u && u.token && u.expiresAt && u.expiresAt - Date.now() > margen);
+const llavesDe = session => ({ token: session.access_token, refreshToken: session.refresh_token, expiresAt: Date.now() + (session.expires_in || 3600) * 1000 });
+
+const leerActividad = () => { try { return Number(localStorage.getItem(ACTIVIDAD_KEY)) || 0; } catch (_) { return 0; } };
+const marcarActividad = (t = Date.now()) => { try { localStorage.setItem(ACTIVIDAD_KEY, String(t)); } catch (_) {} };
+const inactivoDemasiado = () => { const t = leerActividad(); return t > 0 && Date.now() - t > INACTIVIDAD_MAX_MS; };
+
+const avisarCierre = motivo => { try { localStorage.setItem(CIERRE_KEY, JSON.stringify({ motivo, t: Date.now() })); } catch (_) {} };
+const avisoDeCierre = () => {
+  try {
+    const c = JSON.parse(localStorage.getItem(CIERRE_KEY) || "null");
+    const texto = c && Date.now() - c.t < 60 * 1000 ? MENSAJES_CIERRE[c.motivo] : null;
+    return texto ? { tipo: "info", texto } : null;
+  } catch (_) { return null; }
+};
+
+const conTurnoDeSesion = tarea =>
+  typeof navigator !== "undefined" && navigator.locks && navigator.locks.request
+    ? navigator.locks.request("repairx-sesion", tarea)
+    : tarea();
+
+// Renueva la sesión de `actual`, o adopta la que otra pestaña ya renovó. Devuelve:
+//   { usuario }                     sesión renovada
+//   { definitivo: true }            la sesión ya no existe en el servidor: hay que volver a entrar
+//   { definitivo: false }           falla pasajera (sin internet, servidor ocupado): reintentar después
+//   { ajena: true, definitivo: true } en este navegador ya no está esta sesión (se cerró o entró otra cuenta)
+const renovarSesionCompartida = actual => conTurnoDeSesion(async () => {
+  const guardada = leerSesion();
+  if (!guardada || guardada.id !== actual.id || !guardada.refreshToken) return { ajena: true, definitivo: true };
+  if (guardada.refreshToken !== actual.refreshToken && sesionVigente(guardada))
+    return { usuario: { ...actual, token: guardada.token, refreshToken: guardada.refreshToken, expiresAt: guardada.expiresAt } };
+  // Se usa siempre la llave más reciente (la de mayor vencimiento) entre la guardada y la de esta pestaña
+  const llave = (actual.expiresAt || 0) > (guardada.expiresAt || 0) ? actual.refreshToken : guardada.refreshToken;
+  const { session, error, definitivo } = await supaAuth.refreshSession(llave);
+  if (session) {
+    const llaves = llavesDe(session);
+    guardarSesion({ ...guardada, ...llaves });   // todavía con el turno: la siguiente pestaña ya ve la llave nueva
+    return { usuario: { ...actual, ...llaves } };
+  }
+  if (definitivo) { avisarCierre("vencida"); borrarSesion(); }
+  return { error, definitivo: !!definitivo };
+});
 
 const ROLES = {
   admin:    { label:"Administrador", color:"#FF5C35", permisos:["todo"] },
@@ -1010,7 +1100,7 @@ function NuevaPasswordScreen({ token, onListo, onCancelar }) {
     setL(true); setErr("");
     const { error } = await supaAuth.cambiarPassword(token, pw);
     if (error) { setErr(error); setL(false); return; }
-    await supaAuth.signOut(token);   // revoca las sesiones en todos los dispositivos
+    await supaAuth.signOut(token, "global");   // con la contraseña nueva, se cierran las sesiones en todos los dispositivos
     onListo();
   };
   const onKey = e => { if (e.key === "Enter") guardar(); };
@@ -1239,7 +1329,7 @@ function LoginScreen({ onLogin, aviso }) {
   );
 }
 
-function UsuarioBadge({ usuario, onLogout }) {
+function UsuarioBadge({ usuario, onLogout, onLogoutTodos }) {
   const [open, setOpen]=useState(false);
   const rol = ROLES[usuario.rol]||{label:"",color:BRAND.muted,permisos:[]};
   return (
@@ -1252,7 +1342,7 @@ function UsuarioBadge({ usuario, onLogout }) {
       {open&&(
         <>
           <div onClick={()=>setOpen(false)} style={{position:"fixed",inset:0,zIndex:400}} />
-          <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:12,padding:"0.75rem",minWidth:200,zIndex:401,boxShadow:"0 8px 24px #00000066"}}>
+          <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:12,padding:"0.75rem",minWidth:240,zIndex:401,boxShadow:"0 8px 24px #00000066"}}>
             <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{usuario.nombre}</div>
             <div style={{fontSize:11,color:BRAND.muted,marginBottom:2}}>{usuario.email}</div>
             <div style={{fontSize:11,color:BRAND.muted,marginBottom:2}}>{usuario.tallerNombre||usuario.taller}</div>
@@ -1260,7 +1350,8 @@ function UsuarioBadge({ usuario, onLogout }) {
             {(!usuario.taller||usuario.modoDemo)&&<div style={{marginBottom:12}} />}
             <div style={{fontSize:10,color:BRAND.muted,marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Permisos</div>
             {rol.permisos.includes("todo")?<div style={{fontSize:11,color:BRAND.green,marginBottom:12}}>Acceso completo</div>:<div style={{marginBottom:12}}>{rol.permisos.map(p=><div key={p} style={{fontSize:11,color:BRAND.muted,marginBottom:2}}>{p.replace(/_/g," ")}</div>)}</div>}
-            <button onClick={()=>{onLogout();setOpen(false);}} style={{width:"100%",background:"#7F1D1D22",color:"#fca5a5",border:"0.5px solid #991b1b44",borderRadius:8,padding:"7px",cursor:"pointer",fontSize:12,fontWeight:500}}>Cerrar sesión</button>
+            <button onClick={()=>{onLogout();setOpen(false);}} style={{width:"100%",background:"#FEF2F2",color:"#B91C1C",border:"0.5px solid #FECACA",borderRadius:8,padding:"7px",cursor:"pointer",fontSize:12,fontWeight:600}}>Cerrar sesión</button>
+            {!usuario.modoDemo&&onLogoutTodos&&<button onClick={()=>{setOpen(false);onLogoutTodos();}} style={{width:"100%",background:"none",border:"none",color:BRAND.muted,padding:"8px 0 0",cursor:"pointer",fontSize:11,textDecoration:"underline"}}>Cerrar sesión en todos mis dispositivos</button>}
           </div>
         </>
       )}
@@ -1728,8 +1819,74 @@ export default function App() {
   const [iniciando, setIniciando] = useState(true);
   const [recuperacion, setRecuperacion] = useState(null);   // { accessToken } cuando se abre un enlace de recuperación
   const [avisoLogin, setAvisoLogin] = useState(null);       // { tipo: 'info'|'error', texto }
+  const [sinConexion, setSinConexion] = useState(false);    // al abrir: la llave venció y no hay internet para renovarla
+  const usuarioRef = useRef(null); usuarioRef.current = usuario;
+  const iniciandoRef = useRef(true); iniciandoRef.current = iniciando;
+  const arrancarRef = useRef(null);
+
+  // Cambia solo las llaves de la sesión; lo demás del usuario sigue igual
+  const aplicarLlaves = n => setUsuario(prev => prev && prev.id === n.id
+    ? { ...prev, token: n.token, refreshToken: n.refreshToken, expiresAt: n.expiresAt } : prev);
+
+  // Cierra la sesión en este navegador (en todas sus pestañas). revocar: avisar también al servidor.
+  const cerrarSesionLocal = (motivo, revocar = true) => {
+    const u = usuarioRef.current;
+    if (revocar && u && !u.modoDemo && sesionVigente(u, 0)) supaAuth.signOut(u.token, "local");
+    avisarCierre(motivo);
+    borrarSesion();
+    setUsuario(null);
+    setAvisoLogin(MENSAJES_CIERRE[motivo] ? { tipo:"info", texto: MENSAJES_CIERRE[motivo] } : null);
+  };
+
+  // La sesión ya no está en este navegador: otra pestaña la cerró, o entró otra cuenta
+  const sesionAjena = () => {
+    if (leerSesion()) { window.location.reload(); return; }
+    setUsuario(null);
+    setAvisoLogin(avisoDeCierre());
+  };
 
   useEffect(() => {
+    let vivo = true, enCurso = false, reintento = null, intentos = 0;
+    // Abre la sesión guardada: la renueva (o adopta la que renovó otra pestaña) y trae el perfil al día
+    const arrancar = async () => {
+      if (!vivo || enCurso) return;
+      enCurso = true; clearTimeout(reintento);
+      try {
+        const u = leerSesion();
+        if (!u) { setSinConexion(false); setIniciando(false); return; }
+        if (u.modoDemo || !u.refreshToken) { setUsuario(u); setIniciando(false); return; }
+        if (inactivoDemasiado()) {
+          if (sesionVigente(u, 0)) supaAuth.signOut(u.token, "local");
+          borrarSesion();
+          setAvisoLogin({ tipo:"info", texto: MENSAJES_CIERRE.inactividad });
+          setSinConexion(false); setIniciando(false);
+          return;
+        }
+        const r = await renovarSesionCompartida(u);
+        if (!vivo) return;
+        let act = r.usuario || null;
+        if (!act) {
+          if (r.ajena && leerSesion()) { reintento = setTimeout(arrancar, 0); return; }   // entró otra cuenta: abrir esa
+          if (r.definitivo) {
+            setAvisoLogin(r.ajena ? avisoDeCierre() : { tipo:"info", texto: MENSAJES_CIERRE.vencida });
+            setSinConexion(false); setIniciando(false);
+            return;
+          }
+          // Sin internet: si la llave aún sirve un rato se entra y se renueva después; si no, se espera la conexión
+          if (sesionVigente(u, 30 * 1000)) act = u;
+          else { setSinConexion(true); intentos++; reintento = setTimeout(arrancar, Math.min(30, 5 * intentos) * 1000); return; }
+        }
+        try {
+          const perfil = await Promise.race([supaApi.getPerfil(act.token, act.id), new Promise(res => setTimeout(() => res(null), 8000))]);
+          if (perfil) act = { ...act, rol: perfil.rol || act.rol, taller: perfil.taller || act.taller, tallerNombre: perfil.taller_nombre || act.tallerNombre };
+        } catch (_) {}
+        if (!vivo) return;
+        if (!leerActividad()) marcarActividad();
+        setSinConexion(false); setUsuario(act); setIniciando(false);
+      } finally { enCurso = false; }
+    };
+    arrancarRef.current = arrancar;
+
     // ¿Venimos de un enlace del correo (recuperar contraseña / confirmar cuenta)?
     const h = leerHashAuth();
     if (h) {
@@ -1740,43 +1897,106 @@ export default function App() {
       } else if (h.tipo === "recovery" && h.accessToken) {
         setRecuperacion({ accessToken: h.accessToken });
         setIniciando(false);
-        return;
+        return () => { vivo = false; };
       } else if (h.tipo === "signup") {
         setAvisoLogin({ tipo:"info", texto:"Correo confirmado. Ya puedes iniciar sesión." });
       }
     }
-    const u = leerSesion();
-    if (!u) { setIniciando(false); return; }
-    if (u.modoDemo) { setUsuario(u); setIniciando(false); return; }
-    if (u.refreshToken) {
-      supaAuth.refreshSession(u.refreshToken).then(async ({ session, error }) => {
-        if (error || !session?.access_token) { borrarSesion(); setIniciando(false); return; }
-        let act = { ...u, token:session.access_token, refreshToken:session.refresh_token, expiresAt:Date.now()+(session.expires_in||3600)*1000 };
-        try {
-          const perfil = await supaApi.getPerfil(session.access_token, u.id);
-          if (perfil) act = { ...act, rol: perfil.rol || act.rol, taller: perfil.taller || act.taller, tallerNombre: perfil.taller_nombre || act.tallerNombre };
-        } catch (_) {}
-        setUsuario(act);
-        setIniciando(false);
-      }).catch(() => { borrarSesion(); setIniciando(false); });
-    } else { setUsuario(u); setIniciando(false); }
+    arrancar();
+    const alVolverLaRed = () => { if (iniciandoRef.current) arrancar(); };
+    window.addEventListener("online", alVolverLaRed);
+    return () => { vivo = false; clearTimeout(reintento); window.removeEventListener("online", alVolverLaRed); };
   }, []);
 
   useEffect(() => { if (usuario) guardarSesion(usuario); }, [usuario]);
 
+  // Lo que hagan las demás pestañas de este navegador con la sesión
   useEffect(() => {
-    if (!usuario || usuario.modoDemo || !usuario.refreshToken) return;
-    const ms = usuario.expiresAt - Date.now() - 60_000;
-    if (ms <= 0) return;
-    const t = setTimeout(async () => {
-      const { session, error } = await supaAuth.refreshSession(usuario.refreshToken);
-      if (error) { handleLogout(); return; }
-      setUsuario(u => ({ ...u, token:session.access_token, refreshToken:session.refresh_token, expiresAt:Date.now()+(session.expires_in||3600)*1000 }));
-    }, ms);
-    return () => clearTimeout(t);
-  }, [usuario]);
+    const alCambiar = e => {
+      if (e.key !== null && e.key !== SESION_KEY) return;
+      if (iniciandoRef.current) { if (arrancarRef.current) arrancarRef.current(); return; }
+      const actual = usuarioRef.current, guardada = leerSesion();
+      if (!guardada) {                                            // se cerró la sesión en otra pestaña
+        if (actual && !actual.modoDemo) { setUsuario(null); setAvisoLogin(avisoDeCierre()); }
+        return;
+      }
+      if (!actual) { setAvisoLogin(null); setUsuario(guardada); return; }   // iniciaste sesión en otra pestaña
+      if (guardada.id !== actual.id || !!guardada.modoDemo !== !!actual.modoDemo) { window.location.reload(); return; }
+      if (guardada.refreshToken && guardada.refreshToken !== actual.refreshToken && (guardada.expiresAt || 0) > (actual.expiresAt || 0))
+        aplicarLlaves(guardada);                                  // otra pestaña renovó la sesión
+      if (guardada.rol !== actual.rol || guardada.taller !== actual.taller)
+        setUsuario(prev => prev && prev.id === guardada.id ? { ...prev, rol: guardada.rol, taller: guardada.taller, tallerNombre: guardada.tallerNombre } : prev);
+    };
+    window.addEventListener("storage", alCambiar);
+    return () => window.removeEventListener("storage", alCambiar);
+  }, []);
 
-  const handleLogout = async () => { if (usuario && !usuario.modoDemo && usuario.token) await supaAuth.signOut(usuario.token); borrarSesion(); setUsuario(null); };
+  // Renueva la sesión antes de que venza y la cierra tras 12 horas sin uso. Revisa cada 30 s,
+  // al volver a la pestaña o despertar la computadora, y en cuanto regresa el internet.
+  const idSesion = usuario && !usuario.modoDemo && usuario.refreshToken ? usuario.id : "";
+  useEffect(() => {
+    if (!idSesion) return;
+    let vivo = true, enCurso = false, fallas = 0, reintento = null;
+    const revisar = async () => {
+      if (!vivo || enCurso) return;
+      if (inactivoDemasiado()) { cerrarSesionLocal("inactividad"); return; }
+      const u = usuarioRef.current;
+      if (!u || u.modoDemo || sesionVigente(u)) return;
+      enCurso = true;
+      let r;
+      try { r = await renovarSesionCompartida(u); } finally { enCurso = false; }
+      if (!vivo) return;
+      if (r.usuario) { fallas = 0; aplicarLlaves(r.usuario); return; }
+      if (r.ajena) { sesionAjena(); return; }
+      if (r.definitivo) { cerrarSesionLocal("vencida", false); return; }
+      fallas++;                                     // sin internet: la sesión sigue abierta y se reintenta
+      clearTimeout(reintento);
+      if (fallas <= 3) reintento = setTimeout(revisar, 5000 * fallas);
+    };
+    revisar();
+    const iv = setInterval(revisar, REVISAR_SESION_MS);
+    const alVolver = () => { if (!document.hidden) revisar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("focus", alVolver);
+    window.addEventListener("online", revisar);
+    return () => {
+      vivo = false; clearInterval(iv); clearTimeout(reintento);
+      document.removeEventListener("visibilitychange", alVolver);
+      window.removeEventListener("focus", alVolver);
+      window.removeEventListener("online", revisar);
+    };
+  }, [idSesion]);
+
+  // Cualquier clic, toque o tecla cuenta como uso, en cualquier pestaña. Si ya pasaron 12 horas
+  // sin uso, ese primer toque cierra la sesión en lugar de extenderla.
+  useEffect(() => {
+    if (!idSesion) return;
+    let ultima = 0;
+    const alUsar = () => {
+      const ahora = Date.now();
+      if (ahora - ultima < 60 * 1000) return;       // a lo más una escritura por minuto
+      if (inactivoDemasiado()) { cerrarSesionLocal("inactividad"); return; }
+      ultima = ahora; marcarActividad(ahora);
+    };
+    const eventos = ["pointerdown", "keydown", "touchstart", "wheel"];
+    eventos.forEach(ev => window.addEventListener(ev, alUsar, { capture: true, passive: true }));
+    return () => eventos.forEach(ev => window.removeEventListener(ev, alUsar, { capture: true }));
+  }, [idSesion]);
+
+  const iniciarSesion = u => { if (!u.modoDemo) marcarActividad(); setAvisoLogin(null); setUsuario(u); };
+  const cerrarSesion = () => cerrarSesionLocal("salida");
+  const cerrarSesionEnTodos = async () => {
+    const u = usuarioRef.current;
+    if (!u || u.modoDemo) return;
+    if (!confirm("¿Cerrar tu sesión en todos tus dispositivos? Tendrás que volver a iniciar sesión en cada uno.")) return;
+    let vigente = u;
+    if (!sesionVigente(u, 10 * 1000)) { const r = await renovarSesionCompartida(u); if (r.usuario) vigente = r.usuario; }
+    if (!(await supaAuth.signOut(vigente.token, "global"))) {
+      alert("No se pudo cerrar la sesión en tus otros dispositivos. Revisa tu conexión e inténtalo de nuevo.");
+      return;
+    }
+    cerrarSesionLocal("todos", false);
+  };
 
   const [vista,setVista]=useState("dashboard");
   const [subVista,setSubVista]=useState("activas");
@@ -1948,25 +2168,42 @@ export default function App() {
 
   useEffect(() => {
     if (!claveSesion) { cargadoRef.current = false; return; }
-    setCargando(true);
-    supaApi.getOrdenes(usuario.token).then(rows => {
-      if (!Array.isArray(rows)) { setCargando(false); return; }
-      const listas = { activas:[], cobro:[], cobradas:[], terminadas:[], historial:[] };
-      const snap = {}, env = {}; let cursor = null;
-      rows.forEach(r => {
-        const o = dbToOrden(r);
-        listas[listaDe(o)].push(o);
-        const fila = ordenToDB(o, usuario.taller);
-        snap[o.id] = { base: fila, version: r.version || 1 };
-        env[o.id] = estable(fila);
-        if (r.actualizado_en && (!cursor || Date.parse(r.actualizado_en) > Date.parse(cursor))) cursor = r.actualizado_en;
+    // Si no se pueden traer las órdenes (sin internet al abrir), se reintenta solo con la llave vigente
+    let vivo = true, reintento = null, intentos = 0;
+    const AVISO_CARGA = "No se pudieron cargar las órdenes. Verifica tu conexión; se reintentará automáticamente.";
+    const cargar = () => {
+      const u = usuarioRef.current;
+      if (!vivo || !u) return;
+      supaApi.getOrdenes(u.token).then(rows => {
+        if (!vivo) return;
+        if (!Array.isArray(rows)) throw new Error("respuesta inesperada al cargar las órdenes");
+        const listas = { activas:[], cobro:[], cobradas:[], terminadas:[], historial:[] };
+        const snap = {}, env = {}; let cursor = null;
+        rows.forEach(r => {
+          const o = dbToOrden(r);
+          listas[listaDe(o)].push(o);
+          const fila = ordenToDB(o, usuario.taller);
+          snap[o.id] = { base: fila, version: r.version || 1 };
+          env[o.id] = estable(fila);
+          if (r.actualizado_en && (!cursor || Date.parse(r.actualizado_en) > Date.parse(cursor))) cursor = r.actualizado_en;
+        });
+        setOrdenes(listas.activas); setOrdenesCobro(listas.cobro); setOrdenesCobradas(listas.cobradas); setOrdenesTerminadas(listas.terminadas); setHistorial(listas.historial);
+        syncRef.current = snap; enviadoRef.current = env;
+        cursorRef.current = cursor || new Date(Date.now() - 60000).toISOString();
+        cargadoRef.current = true;
+        setCargando(false);
+        setErrorSync(e => e === AVISO_CARGA ? "" : e);
+      }).catch(() => {
+        if (!vivo) return;
+        setCargando(false);
+        setErrorSync(AVISO_CARGA);
+        intentos++;
+        reintento = setTimeout(cargar, Math.min(60, 10 * intentos) * 1000);
       });
-      setOrdenes(listas.activas); setOrdenesCobro(listas.cobro); setOrdenesCobradas(listas.cobradas); setOrdenesTerminadas(listas.terminadas); setHistorial(listas.historial);
-      syncRef.current = snap; enviadoRef.current = env;
-      cursorRef.current = cursor || new Date(Date.now() - 60000).toISOString();
-      cargadoRef.current = true;
-      setCargando(false);
-    }).catch(() => setCargando(false));
+    };
+    setCargando(true);
+    cargar();
+    return () => { vivo = false; clearTimeout(reintento); };
   }, [claveSesion]);
 
   // Guarda lo que cambió (espera 0.8 s para agrupar teclazos)
@@ -2006,13 +2243,19 @@ export default function App() {
   // Los avisos informativos se ocultan solos
   useEffect(() => { if (!avisoSync) return; const t = setTimeout(() => setAvisoSync(""), 10000); return () => clearTimeout(t); }, [avisoSync]);
 
-  if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center"}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><LogoRX alto={24} centrado /></div><div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div></div></div>;
+  if (iniciando) return <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}><div style={{textAlign:"center",maxWidth:320}}><div style={{fontSize:28,fontWeight:900,letterSpacing:3,marginBottom:8}}><LogoRX alto={24} centrado /></div>
+    {sinConexion
+      ? <><div style={{fontSize:14,fontWeight:600,color:BRAND.text,margin:"10px 0 4px"}}>Sin conexión con el servidor</div>
+          <div style={{fontSize:12,color:BRAND.muted,lineHeight:1.5,marginBottom:14}}>Tu sesión sigue abierta. Volveremos a intentarlo en cuanto regrese el internet.</div>
+          <button onClick={()=>arrancarRef.current&&arrancarRef.current()} style={{background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.6rem 1.2rem",fontSize:13,fontWeight:700,cursor:"pointer"}}>Reintentar ahora</button></>
+      : <div style={{fontSize:12,color:BRAND.muted}}>Cargando...</div>}
+  </div></div>;
   if (recuperacion) return <NuevaPasswordScreen token={recuperacion.accessToken}
     onListo={()=>{ borrarSesion(); setUsuario(null); setRecuperacion(null); setAvisoLogin({ tipo:"info", texto:"Contraseña actualizada. Inicia sesión con tu nueva contraseña." }); }}
     onCancelar={()=>setRecuperacion(null)} />;
-  if (!usuario) return <LoginScreen key={avisoLogin ? avisoLogin.texto : "login"} onLogin={setUsuario} aviso={avisoLogin} />;
+  if (!usuario) return <LoginScreen key={avisoLogin ? avisoLogin.texto : "login"} onLogin={iniciarSesion} aviso={avisoLogin} />;
   if (!usuario.modoDemo && (usuario.rol === "pendiente" || usuario.rol === "rechazado"))
-    return <PantallaPendiente usuario={usuario} onActualizar={setUsuario} onLogout={handleLogout} />;
+    return <PantallaPendiente usuario={usuario} onActualizar={setUsuario} onLogout={cerrarSesion} />;
 
   const pendientesEquipo = puedePerm(usuario,"todo") ? usuarios.filter(u=>u.rol==="pendiente").length : 0;
 
@@ -2521,7 +2764,7 @@ export default function App() {
               {titulos[vista]&&desktop&&<span style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{titulos[vista]}</span>}
               {MODO_DEMO&&<span style={{fontSize:10,background:"#F59E0B22",color:"#F59E0B",borderRadius:10,padding:"2px 8px",border:"0.5px solid #F59E0B44"}}>DEMO</span>}
             </div>
-            <UsuarioBadge usuario={usuario} onLogout={handleLogout} />
+            <UsuarioBadge usuario={usuario} onLogout={cerrarSesion} onLogoutTodos={cerrarSesionEnTodos} />
           </div>
           <div style={{padding:"6px 1rem",borderBottom:"0.5px solid "+BRAND.border,background:BRAND.card,display:"flex",alignItems:"center",gap:8}}>
             {usuario.logo&&<img src={usuario.logo} alt="" style={{width:22,height:22,borderRadius:6,objectFit:"cover",flexShrink:0}} />}
