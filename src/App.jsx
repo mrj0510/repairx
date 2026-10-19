@@ -249,6 +249,17 @@ const supaApi = {
     if (!r.ok) throw new Error("Error " + r.status);
     return r.json();
   },
+  // Pizarrón de la TV: solo las unidades activas y solo lo que se muestra (ver migracion_pizarron_pantalla.sql).
+  // Con la marca de la consulta anterior, si nada cambió la respuesta no trae la lista.
+  pizarron: async (token, marca) => {
+    const r = await fetch(SUPA_URL + "/rest/v1/rpc/pizarron", {
+      method:"POST", headers:{ ...supaHeaders,"Authorization":"Bearer "+token }, body: JSON.stringify({ p_marca: marca || null }),
+      signal: limiteDeTiempo(20000),
+    });
+    const datos = await r.json().catch(() => null);
+    if (!r.ok) { const e = new Error((datos && datos.message) || ("Error " + r.status)); e.status = r.status; e.codigo = datos && datos.code; throw e; }
+    return datos;
+  },
 };
 
 // ─── STORAGE + UTILIDADES ─────────────────────────────────────────────────────
@@ -595,7 +606,7 @@ const ETIQUETAS_CAMPO = {
   en_transito:"la ubicación (piso o tránsito)", llegada:"cómo llegó la unidad", fecha_transito:"la fecha de tránsito", fecha_reingreso:"la fecha de reingreso",
   estado:"el estado", notas:"las notas", costo:"el costo", tecnico:"el técnico", cliente:"el cliente",
   telefono:"el teléfono", vehiculo:"el vehículo", placa:"la placa", serie:"el VIN", siniestro:"el siniestro",
-  color:"el color", servicio:"el servicio", entrega:"la fecha de entrega", foto_principal:"la foto principal",
+  color:"el color", servicio:"el servicio", entrega:"la fecha de entrega", fecha_promesa:"la fecha de entrega", foto_principal:"la foto principal",
   fotos:"una foto", documentos:"un documento", novedades:"una novedad", refacciones:"una refacción",
   descuento:"el descuento", motivo_cierre:"el motivo de cierre", metodo_pago:"el método de pago",
 };
@@ -766,6 +777,7 @@ const MENSAJES_CIERRE = {
   inactividad: "Se cerró tu sesión después de 12 horas sin uso. Vuelve a iniciar sesión.",
   vencida:     "Tu sesión terminó. Vuelve a iniciar sesión.",
   todos:       "Cerraste la sesión en todos tus dispositivos.",
+  rol:         "La cuenta de esta pantalla cambió de rol. Vuelve a iniciar sesión.",
 };
 
 const sesionVigente = (u, margen = RENOVAR_SESION_ANTES_MS) => !!(u && u.token && u.expiresAt && u.expiresAt - Date.now() > margen);
@@ -815,7 +827,10 @@ const ROLES = {
   admin:    { label:"Administrador", color:"#FF5C35", permisos:["todo"] },
   asesor:   { label:"Asesor",        color:"#3B82F6", permisos:["ver_ordenes","crear_ordenes","editar_ordenes","novedades","documentos","fotos"] },
   valuador: { label:"Valuador",      color:"#8B5CF6", permisos:["ver_ordenes","ficha","novedades","documentos"] },
+  // Cuenta para la TV del taller: solo ve el pizarrón (sin teléfonos, costos ni fotos) y no modifica nada
+  pantalla: { label:"Pantalla (TV)", color:"#0F766E", permisos:[] },
 };
+const ROLES_EQUIPO = ["admin", "asesor", "valuador"];
 
 const DEMOS = [
   { id:"u1", nombre:"Carlos Mendoza", email:"admin@taller.com",    pass:"admin123",    rol:"admin",    taller:"Taller AutoPro", av:"A" },
@@ -911,7 +926,7 @@ const diasEnTaller = o => {
   const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
   if (!ini) return 0;
   const d1 = new Date(ini); if (isNaN(d1)) return 0;
-  const finStr = (o && (o.fechaEntregaReal || o.fechaPromesaEntrega)) || "";
+  const finStr = (o && (o.fechaEntregaReal || fechaEntregaOrden(o))) || "";
   const d2 = finStr ? new Date(finStr) : new Date();
   if (isNaN(d2)) return cDias(ini);
   return Math.max(0, Math.floor((d2.getTime() - d1.getTime()) / 86400000));
@@ -1129,18 +1144,25 @@ function PantallaPendiente({ usuario, onActualizar, onLogout }) {
   const [nota, setNota] = useState("");
   const rechazado = usuario.rol === "rechazado";
   const taller = usuario.tallerNombre || "el taller";
-  const revisar = async () => {
-    setRevisando(true); setNota("");
+  const revisar = async (silencioso = false) => {
+    if (!silencioso) { setRevisando(true); setNota(""); }
     try {
       const perfil = await supaApi.getPerfil(usuario.token, usuario.id);
       if (perfil && perfil.rol && perfil.rol !== usuario.rol) {
         onActualizar({ ...usuario, rol: perfil.rol, taller: perfil.taller || usuario.taller, tallerNombre: perfil.taller_nombre || usuario.tallerNombre });
         return;
       }
-      setNota("Tu solicitud sigue en espera. Vuelve a revisar más tarde.");
-    } catch { setNota("No se pudo consultar. Revisa tu conexión."); }
-    finally { setRevisando(false); }
+      if (!silencioso) setNota("Tu solicitud sigue en espera. Vuelve a revisar más tarde.");
+    } catch { if (!silencioso) setNota("No se pudo consultar. Revisa tu conexión."); }
+    finally { if (!silencioso) setRevisando(false); }
   };
+  // Revisa sola cada minuto: así la pantalla del taller abre el pizarrón en cuanto el administrador la aprueba
+  // (o la vuelve a aprobar después de haberle quitado el acceso)
+  useEffect(() => {
+    if (usuario.modoDemo) return;
+    const iv = setInterval(() => { if (!document.hidden) revisar(true); }, 60 * 1000);
+    return () => clearInterval(iv);
+  }, [rechazado, usuario.token]);
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
       <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><LogoRX alto={30} centrado /></div>
@@ -1153,7 +1175,7 @@ function PantallaPendiente({ usuario, onActualizar, onLogout }) {
             : <>Tu solicitud para unirte a <b style={{color:BRAND.text}}>{taller}</b> está esperando la aprobación del administrador. Cuando te apruebe, pulsa «Revisar de nuevo».</>}
         </div>
         {nota && <div style={{fontSize:12,color:BRAND.muted,background:BRAND.bg,borderRadius:8,padding:"8px 12px",marginBottom:12}}>{nota}</div>}
-        {!rechazado && <button onClick={revisar} disabled={revisando} style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.7rem",fontSize:14,fontWeight:700,cursor:revisando?"wait":"pointer",opacity:revisando?0.7:1,marginBottom:8}}>{revisando ? "Revisando..." : "Revisar de nuevo"}</button>}
+        {!rechazado && <button onClick={()=>revisar()} disabled={revisando} style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.7rem",fontSize:14,fontWeight:700,cursor:revisando?"wait":"pointer",opacity:revisando?0.7:1,marginBottom:8}}>{revisando ? "Revisando..." : "Revisar de nuevo"}</button>}
         <button onClick={onLogout} style={{width:"100%",background:"none",border:"1px solid "+BRAND.border,color:BRAND.muted,borderRadius:10,padding:"0.6rem",fontSize:13,cursor:"pointer"}}>Cerrar sesión</button>
       </div>
     </div>
@@ -1359,11 +1381,12 @@ function UsuarioBadge({ usuario, onLogout, onLogoutTodos }) {
   );
 }
 
-function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre, pendientes, refPend, refAtrasadas }) {
+function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, logo, tallerNombre, pendientes, refPend, refAtrasadas, pizAlertas }) {
   const [open, setOpen] = useState(false);
   const NAV = [
     {id:"dashboard", icon:"📊", label:"Dashboard"},
     {id:"ordenes",   icon:"📋", label:"Órdenes"},
+    {id:"pizarron",  icon:"📺", label:"Pizarrón"+(pizAlertas?" ("+pizAlertas+") ⚠":"")},
     {id:"refacciones", icon:"📦", label:"Refacciones"+(refPend?" ("+refPend+")":"")+(refAtrasadas?" ⚠":"")},
     {id:"terminadas",icon:"🏁", label:"Terminadas"+(tLen?" ("+tLen+")":"")},
     {id:"historial", icon:"🗂️", label:"Historial"+(hLen?" ("+hLen+")":"")},
@@ -1484,12 +1507,12 @@ function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usua
   );
 }
 
-function CampoFecha({ value, onChange }) {
+function CampoFecha({ value, onChange, min }) {
   const ref = useRef();
   const abrir = () => { const el=ref.current; if(!el)return; try{ el.showPicker(); }catch{ el.focus(); } };
   return (
     <div style={{position:"relative"}}>
-      <input ref={ref} type="date" value={value||""} onChange={e=>onChange(e.target.value)}
+      <input ref={ref} type="date" value={value||""} min={min} onChange={e=>onChange(e.target.value)}
         style={{background:BRAND.bg,border:"0.5px solid "+BRAND.border,borderRadius:9,padding:"0.5rem 2.2rem 0.5rem 0.8rem",color:BRAND.text,fontSize:12,width:"100%",boxSizing:"border-box"}} />
       <button type="button" onClick={abrir} title="Abrir calendario" style={{position:"absolute",right:2,top:0,height:"100%",background:"none",border:"none",cursor:"pointer",color:BRAND.accent,fontSize:15,padding:"0 8px"}}>📅</button>
     </div>
@@ -1503,16 +1526,17 @@ function SecFicha({ title, children }) {
   return <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}><div style={{fontSize:11,fontWeight:700,color:BRAND.accent,textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>{title}</div>{children}</div>;
 }
 
-function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
+function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S, usuario }) {
   const [editando,setEditando]=useState(false);
   const [d,setD]=useState({});
   useEffect(() => {
     if (editando) setD({
-      fechaPrimerIngreso:o.fechaPrimerIngreso||"",fechaProgramacion:o.fechaProgramacion||"",fechaReingreso:o.fechaReingreso||"",fechaInicioReparacion:o.fechaInicioReparacion||"",fechaPromesaEntrega:o.fechaPromesaEntrega||"",fechaEntregaReal:o.fechaEntregaReal||"",refaccionesCompletas:o.refaccionesCompletas||"",perfilManoObra:o.perfilManoObra||"",perfilPintura:o.perfilPintura||"",perfilMecanica:o.perfilMecanica||"",clienteEspecial:o.clienteEspecial||false,tipoClienteEspecial:o.tipoClienteEspecial||"",deducible:o.deducible||"",anioAtencion:o.anioAtencion||"",mesAtencion:o.mesAtencion||"",diaAtencion:o.diaAtencion||"",costoManoObra:o.costoManoObra||"",costoRefacciones:o.costoRefacciones||"",montoReparacionInterna:o.montoReparacionInterna||"",montoTOT:o.montoTOT||"",
+      fechaPrimerIngreso:o.fechaPrimerIngreso||"",fechaProgramacion:o.fechaProgramacion||"",fechaReingreso:o.fechaReingreso||"",fechaInicioReparacion:o.fechaInicioReparacion||"",fechaPromesaEntrega:fechaEntregaOrden(o),fechaEntregaReal:o.fechaEntregaReal||"",refaccionesCompletas:o.refaccionesCompletas||"",perfilManoObra:o.perfilManoObra||"",perfilPintura:o.perfilPintura||"",perfilMecanica:o.perfilMecanica||"",clienteEspecial:o.clienteEspecial||false,tipoClienteEspecial:o.tipoClienteEspecial||"",deducible:o.deducible||"",anioAtencion:o.anioAtencion||"",mesAtencion:o.mesAtencion||"",diaAtencion:o.diaAtencion||"",costoManoObra:o.costoManoObra||"",costoRefacciones:o.costoRefacciones||"",montoReparacionInterna:o.montoReparacionInterna||"",montoTOT:o.montoTOT||"",
     });
   }, [editando]);
   const set = (k,v) => setD(p=>({...p,[k]:v}));
-  const guardar=()=>{ const upd=ordenes.map(x=>x.id===o.id?{...x,...d}:x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===o.id)); setEditando(false); };
+  // La promesa de entrega de la ficha es la misma del pizarrón: se guarda en ambos campos y su cambio va a la bitácora
+  const guardar=()=>{ const upd=ordenes.map(x=>x.id===o.id?conFechaEntrega({...x,...d}, d.fechaPromesaEntrega||"", { usuario, antes: fechaEntregaOrden(x) }):x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===o.id)); setEditando(false); };
   const fld=v=>v||"—"; const cur=v=>v?"$"+Number(v).toLocaleString("es-MX"):"—";
   const MESES=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
   const TIPES=["Alto perfil","Influencer","Político","Empresa grande","Agencia","VIP","Otro"];
@@ -1555,7 +1579,7 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
         </div>
       ):(
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <SecFicha title="Fechas"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Primer ingreso" v={fld(o.fechaPrimerIngreso)} /><RowFicha l="Programación" v={fld(o.fechaProgramacion)} /><RowFicha l="Reingreso" v={fld(o.fechaReingreso)} /><RowFicha l="Inicio reparación" v={fld(o.fechaInicioReparacion)} /><RowFicha l="Promesa entrega" v={fld(o.fechaPromesaEntrega)} /><RowFicha l="Entrega real" v={fld(o.fechaEntregaReal)} /><RowFicha l="Refacciones compl." v={fld(o.refaccionesCompletas)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:24,color:BRAND.accent}}>{diasEnTaller(o)}</span></div></SecFicha>
+          <SecFicha title="Fechas"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Primer ingreso" v={fld(o.fechaPrimerIngreso)} /><RowFicha l="Programación" v={fld(o.fechaProgramacion)} /><RowFicha l="Reingreso" v={fld(o.fechaReingreso)} /><RowFicha l="Inicio reparación" v={fld(o.fechaInicioReparacion)} /><RowFicha l="Promesa entrega" v={fld(fechaEntregaOrden(o))} /><RowFicha l="Entrega real" v={fld(o.fechaEntregaReal)} /><RowFicha l="Refacciones compl." v={fld(o.refaccionesCompletas)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Días en taller</span><span style={{fontWeight:800,fontSize:24,color:BRAND.accent}}>{diasEnTaller(o)}</span></div></SecFicha>
           <SecFicha title="Perfiles y Financiero"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Perfil mano de obra" v={fld(o.perfilManoObra)} /><RowFicha l="Perfil pintura" v={fld(o.perfilPintura)} /><RowFicha l="Perfil mecánica" v={fld(o.perfilMecanica)} /><RowFicha l="Deducible" v={cur(o.deducible)} /><RowFicha l="Año atención" v={fld(o.anioAtencion)} /><RowFicha l="Mes atención" v={fld(o.mesAtencion)} /><RowFicha l="Día atención" v={fld(o.diaAtencion)} /></div></SecFicha>
           <SecFicha title="Costos"><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 24px"}}><RowFicha l="Mano de obra" v={cur(o.costoManoObra)} /><RowFicha l="Refacciones" v={cur(o.costoRefacciones)} /><RowFicha l="Rep. interna" v={cur(o.montoReparacionInterna)} /><RowFicha l="TOT (proveedor)" v={cur(o.montoTOT)} /></div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,padding:"8px 10px",background:BRAND.card2,borderRadius:8}}><span style={{fontSize:11,color:BRAND.muted}}>Total calculado</span><span style={{fontWeight:800,fontSize:20,color:BRAND.green}}>${[o.costoManoObra,o.costoRefacciones,o.montoTOT].reduce((a,v)=>a+(parseFloat(v)||0),0).toLocaleString("es-MX")}</span></div></SecFicha>
         </div>
@@ -1567,9 +1591,9 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S }) {
 function ExportarExcel({ ordenes, S }) {
   const [taller,setTaller]=useState("Mi Taller"); const [fuente,setFuente]=useState("todas"); const [ok,setOk]=useState(false);
   const pV=v=>{const p=v.trim().split(" ");const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
-  const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||o.fechaPromesaEntrega;if(!b)return"";if(!f)return cDias(b).toString();return Math.max(0,Math.floor((new Date(f)-new Date(b))/86400000)).toString();};
+  const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||fechaEntregaOrden(o);if(!b)return"";if(!f)return cDias(b).toString();return Math.max(0,Math.floor((new Date(f)-new Date(b))/86400000)).toString();};
   const COLS=[
-    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:o=>{const n=(o.refacciones||[]).reduce((a,r)=>a+cantidadRef(r),0);return n||"";}},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>o.fechaPromesaEntrega||""},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
+    {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:o=>{const n=(o.refacciones||[]).reduce((a,r)=>a+cantidadRef(r),0);return n||"";}},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>fechaEntregaOrden(o)},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
   ];
   const filt=fuente==="todas"?ordenes:fuente==="activas"?ordenes.filter(o=>!o.fechaCierre&&!o.fechaPago&&!o.fechaTerminado):fuente==="cobradas"?ordenes.filter(o=>!!o.fechaPago):fuente==="terminadas"?ordenes.filter(o=>!!o.fechaTerminado):ordenes.filter(o=>!!o.fechaCierre);
   const esc=v=>{const s=String(v).replace(/\t/g," ");return(s.includes(",")||s.includes('"')||s.includes("\n"))?'"'+s.replace(/"/g,'""')+'"':s;};
@@ -2198,6 +2222,1097 @@ function ResumenRefaccionesDashboard({ ordenes, desktop, onIr }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PIZARRÓN DEL TALLER
+// · Sección "Pizarrón" (equipo): las unidades activas de la más antigua a la más reciente,
+//   la fecha de entrega (poner, cambiar con motivo, quitar), contacto con el cliente y alertas.
+// · Modo pantalla (TV): se abre con /?pizarron, o solo con una cuenta de rol "pantalla".
+//   Es de solo lectura y apto para que lo vean los clientes: sin teléfonos, costos ni
+//   apellidos. Los datos llegan de la función pizarron() de la base, que ya los entrega
+//   recortados (ver migracion_pizarron_pantalla.sql).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// La fecha prometida al cliente vivía en dos campos: "entrega" (se captura al crear la orden)
+// y "fechaPromesaEntrega" (en la ficha). Ahora se guardan juntos; en las órdenes viejas, si no
+// coinciden, gana la de la ficha (igual que en pizarron() de la base).
+const fechaEntregaOrden = o => (o && (o.fechaPromesaEntrega || o.entrega)) || "";
+
+// Días de una fecha "AAAA-MM-DD" a otra, con signo (negativo si la segunda es anterior)
+const diasEntre = (desde, hasta) => {
+  const a = /^(\d{4})-(\d{2})-(\d{2})/.exec(desde || ""), b = /^(\d{4})-(\d{2})-(\d{2})/.exec(hasta || "");
+  if (!a || !b) return null;
+  return Math.round((Date.UTC(+b[1], +b[2] - 1, +b[3]) - Date.UTC(+a[1], +a[2] - 1, +a[3])) / 86400000);
+};
+const diasParaEntrega = (o, hoyStr) => { const f = fechaEntregaOrden(o); return f ? diasEntre(hoyStr || hoyLocal(), f) : null; };
+const sumarDias = (f, n) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(f || "");
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + n)).toISOString().slice(0, 10) : "";
+};
+
+// Semáforo de entrega. "tv" es el color sobre el fondo oscuro de la pantalla.
+const ESTADOS_ENTREGA = {
+  vencida: { label:"Vencidas",        texto:"#B91C1C", fondo:"#FEF2F2", borde:"#FCA5A5", tv:"#F0524A" },
+  hoy:     { label:"Para hoy",        texto:"#B45309", fondo:"#FFFBEB", borde:"#FCD34D", tv:"#F5B027" },
+  manana:  { label:"Para mañana",     texto:"#1D4ED8", fondo:"#EFF6FF", borde:"#93C5FD", tv:"#5B9BFF" },
+  semana:  { label:"Próximos 6 días", texto:"#1D4ED8", fondo:"#EFF6FF", borde:"#BFDBFE", tv:"#5B9BFF" },
+  despues: { label:"Más adelante",    texto:"#047857", fondo:"#ECFDF5", borde:"#6EE7B7", tv:"#34C77B" },
+  sin:     { label:"Sin fecha",       texto:"#4B5563", fondo:"#F3F4F6", borde:"#D1D5DB", tv:"#8B93A1" },
+};
+const estadoEntrega = (o, hoyStr) => {
+  const d = diasParaEntrega(o, hoyStr);
+  if (d === null) return "sin";
+  if (d < 0) return "vencida";
+  if (d === 0) return "hoy";
+  if (d === 1) return "manana";
+  return d <= 6 ? "semana" : "despues";
+};
+
+const DIAS_CORTOS = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+const DIAS_LARGOS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const MESES_LARGOS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const partesFecha = f => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(f || "");
+  return m ? { mes: +m[2] - 1, dia: +m[3], semana: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay() } : null;
+};
+const fechaConDia = f => { const p = partesFecha(f); return p ? `${DIAS_CORTOS[p.semana]} ${p.dia} ${MESES_CORTOS[p.mes]}` : ""; };    // "jue 23 oct"
+const fechaLarga  = f => { const p = partesFecha(f); return p ? `${DIAS_LARGOS[p.semana]} ${p.dia} de ${MESES_LARGOS[p.mes]}` : ""; }; // "jueves 23 de octubre"
+const conMayuscula = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+// Cómo se lee una entrega: etiqueta corta ("Hoy", "Mañana", "jue 23 oct", "Vencida") y un detalle
+const describirEntrega = (o, hoyStr) => {
+  const f = fechaEntregaOrden(o), estado = estadoEntrega(o, hoyStr), info = ESTADOS_ENTREGA[estado];
+  if (!f) return { estado, info, corta: "Sin fecha", detalle: "" };
+  const d = diasEntre(hoyStr || hoyLocal(), f);
+  if (d < 0)   return { estado, info, corta: "Vencida", detalle: `hace ${-d} día${d === -1 ? "" : "s"}` };
+  if (d === 0) return { estado, info, corta: "Hoy", detalle: fechaConDia(f) };
+  if (d === 1) return { estado, info, corta: "Mañana", detalle: fechaConDia(f) };
+  return { estado, info, corta: fechaConDia(f), detalle: `en ${d} días` };
+};
+
+// Cambios de fecha en la bitácora. Solo cuentan como reprogramación los que mueven la entrega a más tarde.
+const RE_BITACORA_ENTREGA = /^(Fecha de entrega|Entrega reprogramada|Entrega adelantada|Se quitó la fecha de entrega)/;
+const reprogramacionesDe = o => typeof (o && o.reprogramaciones) === "number"
+  ? o.reprogramaciones
+  : ((o && o.bitacora) || []).filter(b => b && typeof b.accion === "string" && b.accion.indexOf("Entrega reprogramada") === 0).length;
+const MOTIVOS_REPROGRAMACION = ["Refacciones atrasadas", "Trabajo adicional", "Autorización de la aseguradora", "Petición del cliente", "Falta de personal o equipo", "Otro"];
+
+// Pone (o quita) la fecha de entrega en los dos campos y lo anota en la bitácora
+const conFechaEntrega = (o, fecha, { motivo = "", usuario = null, antes = fechaEntregaOrden(o) } = {}) => {
+  const nueva = fecha || "", previa = antes || "";
+  const n = { ...o, entrega: nueva, fechaPromesaEntrega: nueva };
+  if (previa === nueva) return n;
+  const extra = motivo ? " · " + motivo : "";
+  const accion = !nueva ? `Se quitó la fecha de entrega (era el ${fechaCorta(previa)})${extra}`
+    : !previa ? `Fecha de entrega: ${fechaCorta(nueva)}`
+    : nueva > previa ? `Entrega reprogramada: ${fechaCorta(previa)} → ${fechaCorta(nueva)}${extra}`
+    : `Entrega adelantada: ${fechaCorta(previa)} → ${fechaCorta(nueva)}${extra}`;
+  n.bitacora = [...(o.bitacora || []), { accion, usuario: (usuario && usuario.nombre) || "", fecha: hoy() }];
+  return n;
+};
+
+// ─── Contacto con el cliente ────────────────────────────────────────────────────
+// WhatsApp: 10 dígitos de México → 52 + número (wa.me ya no usa el "1" de los celulares)
+const numeroWhatsApp = tel => {
+  let d = String(tel || "").replace(/\D/g, "");
+  if (d.length === 13 && d.indexOf("521") === 0) d = "52" + d.slice(3);
+  if (d.length === 10) d = "52" + d;
+  return d.length >= 11 && d.length <= 15 ? d : "";
+};
+const RE_TITULO = /^(lic|ing|sr|sra|srta|dr|dra|arq|mtro|mtra|c)\.?$/i;
+const capitalizar = s => s.toLowerCase().replace(/(^|[\s-])(\S)/g, (m, a, b) => a + b.toUpperCase());
+const primerNombre = n => { const p = String(n || "").trim().split(/\s+/).filter(x => x && !RE_TITULO.test(x)); return p[0] ? capitalizar(p[0]) : ""; };
+// Igual que pizarron_nombre_corto() de la base: "kevin sánchez ruiz" → "Kevin S." (solo para el modo demo)
+const nombreCorto = n => {
+  const v = String(n || "").trim().split(/\s+/).filter(Boolean);
+  if (!v.length) return "";
+  let i = 0;
+  while (i < v.length - 1 && RE_TITULO.test(v[i])) i++;
+  return capitalizar(v[i]) + (v[i + 1] ? " " + v[i + 1].charAt(0).toUpperCase() + "." : "");
+};
+const mensajeCliente = (o, taller, tipo) => {
+  const nombre = primerNombre(o.cliente);
+  const saludo = `Hola${nombre ? " " + nombre : ""}, te escribimos de ${taller || "tu taller"}.`;
+  const auto = (o.vehiculo || "unidad") + (o.placa ? ` (placas ${o.placa})` : "");
+  const f = fechaEntregaOrden(o), d = f ? diasEntre(hoyLocal(), f) : null;
+  const cierre = " Cualquier duda, estamos a tus órdenes.";
+  if (f && d !== null && d >= 0) {
+    const cuando = d === 0 ? `hoy, ${fechaLarga(f)}` : d === 1 ? `mañana, ${fechaLarga(f)}` : `el ${fechaLarga(f)}`;
+    if (tipo === "reprogramada") return `${saludo} La entrega de tu ${auto} se reprogramó para ${cuando}. Gracias por tu paciencia.${cierre}`;
+    return `${saludo} La entrega de tu ${auto} está programada para ${cuando}.${cierre}`;
+  }
+  if (f) return `${saludo} Queremos darte una actualización sobre la entrega de tu ${auto}.`;
+  return `${saludo} Te contactamos sobre tu ${auto}.`;
+};
+
+// ─── Cifras, alertas y cambios del pizarrón ─────────────────────────────────────
+const resumenPizarron = (ordenes, hoyStr) => {
+  const r = { total: 0, piso: 0, transito: 0, vencida: 0, hoy: 0, manana: 0, semana: 0, despues: 0, sin: 0 };
+  (ordenes || []).forEach(o => { r.total++; if (o.enTransito) r.transito++; else r.piso++; r[estadoEntrega(o, hoyStr)]++; });
+  return r;
+};
+
+const TIPOS_ALERTA = {
+  vencida:   { label: "Entrega vencida",      tv: "#F0524A" },
+  hoy:       { label: "Se entrega hoy",       tv: "#F5B027" },
+  cambio:    { label: "Cambio reciente",      tv: "#FF5C35" },
+  manana:    { label: "Se entrega mañana",    tv: "#5B9BFF" },
+  refaccion: { label: "Refacción atrasada",   tv: "#F28C38" },
+  reingreso: { label: "Lista para reingreso", tv: "#34C77B" },
+};
+const alertasPizarron = (ordenes, hoyStr, cambios) => {
+  const lista = [];
+  (ordenes || []).forEach(o => {
+    const d = diasParaEntrega(o, hoyStr);
+    if (d !== null && d < 0) lista.push({ clave: o.id + ":v", tipo: "vencida", o, detalle: `hace ${-d} día${d === -1 ? "" : "s"}`, orden: 0, peso: d });
+    else if (d === 0) lista.push({ clave: o.id + ":h", tipo: "hoy", o, detalle: o.cliente || "", orden: 1, peso: 0 });
+    else if (d === 1) lista.push({ clave: o.id + ":m", tipo: "manana", o, detalle: o.cliente || "", orden: 3, peso: 0 });
+    const c = cambios && cambios[o.id];
+    if (c) lista.push({ clave: o.id + ":c" + c.t, tipo: "cambio", o, detalle: c.texto, orden: 2, peso: -c.t });
+    const refs = o.refacciones || [];
+    const peor = refs.reduce((m, r) => diasAtrasoRef(r) > (m ? diasAtrasoRef(m) : 0) ? r : m, null);
+    if (peor) {
+      const n = refs.filter(r => diasAtrasoRef(r) > 0).length, dias = diasAtrasoRef(peor);
+      lista.push({ clave: o.id + ":r", tipo: "refaccion", o, orden: 4, peso: -dias,
+        detalle: n === 1 ? `${peor.nombre || "Refacción"}, ${dias} día${dias === 1 ? "" : "s"} de atraso` : `${n} refacciones atrasadas` });
+    }
+    if (o.enTransito && refs.length && refs.every(r => estadoRefaccion(r) === "recibida"))
+      lista.push({ clave: o.id + ":i", tipo: "reingreso", o, detalle: "Ya llegaron todas sus refacciones", orden: 5, peso: 0 });
+  });
+  return lista.sort((a, b) => a.orden - b.orden || a.peso - b.peso || numFolio(a.o) - numFolio(b.o));
+};
+
+// Lo que cambió en una unidad entre dos consultas, solo de lo que se ve en el pizarrón
+const cambioVisible = (antes, ahora) => {
+  if (!antes) return "Nueva unidad en el taller";
+  if (antes.estado !== ahora.estado) return "Pasó a " + (ESTADOS.find(e => e.key === ahora.estado) || ESTADOS[0]).label;
+  const fa = fechaEntregaOrden(antes), fn = fechaEntregaOrden(ahora);
+  if (fa !== fn) return fn ? (fa ? "Nueva fecha: " : "Entrega: ") + fechaConDia(fn) : "Sin fecha de entrega";
+  if (!!antes.enTransito !== !!ahora.enTransito) return ahora.enTransito ? "Salió a tránsito" : "Regresó al taller";
+  const recibidas = o => (o.refacciones || []).filter(r => estadoRefaccion(r) === "recibida").length;
+  if (recibidas(ahora) > recibidas(antes)) return recibidas(ahora) === (ahora.refacciones || []).length ? "Llegaron todas sus refacciones" : "Llegó una refacción";
+  return null;
+};
+
+// Lo que la pantalla puede mostrar de una orden (en modo demo; en producción lo recorta la base)
+const vistaPublica = o => ({
+  id: o.id, vehiculo: o.vehiculo || "", placa: o.placa || "", color: o.color || "", cliente: nombreCorto(o.cliente),
+  estado: o.estado || "presupuesto", servicio: o.servicio || "", tecnico: o.tecnico || "",
+  fecha: o.fecha || "", fechaPrimerIngreso: o.fechaPrimerIngreso || "", entrega: fechaEntregaOrden(o),
+  enTransito: !!o.enTransito, fechaTransito: o.fechaTransito || "", reprogramaciones: reprogramacionesDe(o),
+  refacciones: (o.refacciones || []).map(r => ({ nombre: r.nombre || "", cantidad: cantidadRef(r), estado: estadoRefaccion(r),
+    recibida: estadoRefaccion(r) === "recibida", fechaPromesa: r.fechaPromesa || "" })),
+});
+
+// ─── Colores ───────────────────────────────────────────────────────────────────
+const COLORES_AUTO = {
+  blanco:"#F4F4F1", perla:"#ECE9E0", negro:"#16171A", gris:"#8A9099", grafito:"#4B5058", plata:"#C3C7CC", plateado:"#C3C7CC",
+  rojo:"#C62828", vino:"#6D1A2A", guinda:"#6D1A2A", azul:"#1E4FA3", marino:"#1B2A4A", celeste:"#7CB4E6", verde:"#2E7D4F",
+  amarillo:"#F2C531", naranja:"#EF7A22", dorado:"#C8A24A", cafe:"#6B4A2E", marron:"#6B4A2E", beige:"#D6C5A0", arena:"#CDBA92",
+  champagne:"#E0D1AE", morado:"#5B3A8C", rosa:"#E58FB0", turquesa:"#1FA4A4",
+};
+const colorDeAuto = c => COLORES_AUTO[String(c || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim().split(/\s+/)[0]] || null;
+const COLOR_ETAPA_TV = { presupuesto:"#A0A7B4", mecanica:"#4F8EF7", hojalateria:"#F5A524", pintura:"#F25555", armado:"#1FD1A5" };
+const colorDiasTV = d => d > DIAS_ALERTA ? "hsl(0, 85%, 66%)" : `hsl(${Math.round(140 - (125 * d) / DIAS_ALERTA)}, 72%, 58%)`;
+
+function useMedia(consulta) {
+  const leer = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(consulta).matches;
+  const [coincide, setCoincide] = useState(leer);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia(consulta), h = () => setCoincide(mq.matches);
+    h();
+    if (mq.addEventListener) mq.addEventListener("change", h); else mq.addListener(h);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", h); else mq.removeListener(h); };
+  }, [consulta]);
+  return coincide;
+}
+
+// ─── Datos de la pantalla ──────────────────────────────────────────────────────
+const CONSULTA_PIZARRON_MS = 30 * 1000;     // la TV pregunta cada 30 s; si nada cambió, la respuesta es mínima
+const CAMBIO_VISIBLE_MS = 15 * 60 * 1000;   // cuánto tiempo se marca como "Actualizado" una unidad que cambió
+const REVISAR_PERFIL_PANTALLA_MS = 10 * 60 * 1000;
+
+function usePizarron({ usuario, ordenesDemo, onSinAcceso }) {
+  const [estado, setEstado] = useState({ ordenes: [], cargado: false, sinConexion: false, sinAcceso: false, faltaActivar: false, ultimaOk: 0, cambios: {} });
+  const tokenRef = useRef(null); tokenRef.current = usuario && usuario.token;
+  const sinAccesoRef = useRef(onSinAcceso); sinAccesoRef.current = onSinAcceso;
+  const marcaRef = useRef(null);
+  const previasRef = useRef(null);
+  const vigentes = (cambios, ahora) => { const c = {}; Object.keys(cambios).forEach(id => { if (ahora - cambios[id].t < CAMBIO_VISIBLE_MS) c[id] = cambios[id]; }); return c; };
+
+  useEffect(() => {
+    if (!ordenesDemo) return;
+    setEstado(s => ({ ...s, ordenes: ordenesDemo.map(vistaPublica), cargado: true, ultimaOk: Date.now() }));
+  }, [ordenesDemo]);
+
+  const idUsuario = usuario && usuario.id;
+  useEffect(() => {
+    if (ordenesDemo || !idUsuario) return;
+    let vivo = true, enCurso = false, reintento = null;
+    const aplicar = filas => {
+      const ahora = Date.now(), previas = previasRef.current;
+      const lista = filas.map(f => ({ ...f, refacciones: Array.isArray(f.refacciones) ? f.refacciones : [] }));
+      previasRef.current = new Map(lista.map(o => [o.id, o]));
+      setEstado(s => {
+        const cambios = vigentes(s.cambios, ahora);
+        if (previas) lista.forEach(o => { const t = cambioVisible(previas.get(o.id), o); if (t) cambios[o.id] = { texto: t, t: ahora }; });
+        return { ...s, ordenes: lista, cargado: true, sinConexion: false, sinAcceso: false, faltaActivar: false, ultimaOk: ahora, cambios };
+      });
+    };
+    const consultar = async () => {
+      if (!vivo || enCurso || document.hidden || !tokenRef.current) return;
+      enCurso = true; clearTimeout(reintento);
+      try {
+        const r = await supaApi.pizarron(tokenRef.current, marcaRef.current);
+        if (!vivo) return;
+        if (r && Array.isArray(r.ordenes)) { marcaRef.current = r.marca || null; aplicar(r.ordenes); }
+        else if (r && r.sin_cambios) { const ahora = Date.now(); setEstado(s => ({ ...s, cargado: true, sinConexion: false, sinAcceso: false, ultimaOk: ahora, cambios: vigentes(s.cambios, ahora) })); }
+        else throw new Error("Respuesta inesperada del servidor");
+      } catch (e) {
+        if (!vivo) return;
+        if (e.status === 403 || e.codigo === "42501") {
+          marcaRef.current = null;
+          setEstado(s => ({ ...s, cargado: true, sinAcceso: true }));
+          if (sinAccesoRef.current) sinAccesoRef.current();
+        } else if (e.status === 404 || e.codigo === "PGRST202") {
+          setEstado(s => ({ ...s, cargado: true, faltaActivar: true }));
+        } else {
+          setEstado(s => ({ ...s, sinConexion: true }));        // se siguen mostrando los últimos datos
+          if (e.status === 401) reintento = setTimeout(consultar, 5000);   // la llave se está renovando
+        }
+      } finally { enCurso = false; }
+    };
+    consultar();
+    const iv = setInterval(consultar, CONSULTA_PIZARRON_MS);
+    const alVolver = () => { if (!document.hidden) consultar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("online", consultar);
+    return () => {
+      vivo = false; clearInterval(iv); clearTimeout(reintento);
+      document.removeEventListener("visibilitychange", alVolver);
+      window.removeEventListener("online", consultar);
+    };
+  }, [ordenesDemo ? "demo" : idUsuario]);
+  return estado;
+}
+
+// ─── Modo pantalla (TV) ────────────────────────────────────────────────────────
+// Todo se dibuja en un cuadro 16:9 medido en "u" (1 % de su ancho), así se ve igual en
+// una TV de 32" o de 75", en 720p o en 4K. En un celular se muestra una versión en lista.
+const CSS_PIZARRON = `
+.pz-raiz{--bg:#15181D;--panel:#1E2228;--panel2:#262B33;--linea:#2F353E;--texto:#F1F2F4;--texto2:#A9B0BB;--texto3:#7D8592;
+  --acento:#FF5C35;--placa:#F3F4EF;--tinta:#15181D;--u:1vw;
+  position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);color:var(--texto);overflow:hidden;
+  display:flex;align-items:center;justify-content:center;font-family:"Archivo",system-ui,sans-serif;-webkit-font-smoothing:antialiased;z-index:1000}
+@supports (width:min(1px,2px)){.pz-raiz{--u:min(1vw,1.7778vh)}}
+.pz-raiz.sin-cursor,.pz-raiz.sin-cursor *{cursor:none!important}
+.pz-raiz button{font-family:inherit}
+.pz-tablero{width:calc(var(--u)*100);height:calc(var(--u)*56.25);box-sizing:border-box;padding:calc(var(--u)*1.6) calc(var(--u)*2.2) calc(var(--u)*1.4);
+  display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;row-gap:calc(var(--u)*1.25);transition:transform 2s ease}
+.pz-cab{display:flex;align-items:center;justify-content:space-between}
+.pz-marca{display:flex;align-items:center;min-width:0}
+.pz-logo-rx{height:calc(var(--u)*2.1);width:auto;display:block;flex-shrink:0}
+.pz-sep{width:1px;height:calc(var(--u)*3.6);background:var(--linea);margin:0 calc(var(--u)*1.7);flex-shrink:0}
+.pz-logo-taller{width:calc(var(--u)*3.4);height:calc(var(--u)*3.4);border-radius:calc(var(--u)*0.7);object-fit:cover;flex-shrink:0;background:var(--panel2)}
+.pz-inicial{display:flex;align-items:center;justify-content:center;font-weight:800;font-size:calc(var(--u)*1.9);color:var(--texto2)}
+.pz-taller{margin-left:calc(var(--u)*1.1);min-width:0}
+.pz-taller-nombre{font-size:calc(var(--u)*2.1);font-weight:800;font-stretch:112%;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(var(--u)*50)}
+.pz-taller-sub{font-size:calc(var(--u)*1.1);color:var(--texto2);margin-top:calc(var(--u)*0.25)}
+.pz-reloj{text-align:right;flex-shrink:0}
+.pz-hora{font-size:calc(var(--u)*3.1);font-weight:800;font-stretch:118%;line-height:1;font-variant-numeric:tabular-nums}
+.pz-hora small{font-size:.4em;font-weight:600;color:var(--texto2);margin-left:.35em;font-stretch:100%}
+.pz-fecha{font-size:calc(var(--u)*1.15);color:var(--texto2);margin-top:calc(var(--u)*0.35)}
+.pz-cifras{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));background:var(--panel);border-radius:calc(var(--u)*0.9);overflow:hidden}
+.pz-cifra{display:flex;align-items:center;padding:calc(var(--u)*0.8) calc(var(--u)*1.4);border-left:1px solid var(--linea);min-width:0}
+.pz-cifra:first-child{border-left:none}
+.pz-cifra b{font-size:calc(var(--u)*3.2);font-weight:800;font-stretch:122%;line-height:1;font-variant-numeric:tabular-nums;margin-right:calc(var(--u)*0.85)}
+.pz-cifra span{font-size:calc(var(--u)*1.3);color:var(--texto2);line-height:1.15}
+.pz-cifra.llena{border-left-color:transparent}
+.pz-cifra.llena b,.pz-cifra.llena span{color:var(--tinta)}
+.pz-escenario{position:relative;min-height:0}
+.pz-diapo{position:absolute;top:0;left:0;right:0;bottom:0;display:grid;grid-template-rows:auto minmax(0,1fr);row-gap:calc(var(--u)*0.9);animation:pz-entra .6s ease both}
+@keyframes pz-entra{from{opacity:0}to{opacity:1}}
+.pz-titulo{display:flex;align-items:baseline;justify-content:space-between}
+.pz-titulo h2{margin:0;font-size:calc(var(--u)*2.1);font-weight:800;font-stretch:115%;display:flex;align-items:center}
+.pz-titulo p{margin:0;font-size:calc(var(--u)*1.15);color:var(--texto2)}
+.pz-pausa{font-size:calc(var(--u)*1);font-weight:700;font-stretch:100%;color:var(--tinta);background:var(--texto2);border-radius:calc(var(--u)*0.4);padding:calc(var(--u)*0.2) calc(var(--u)*0.6);margin-left:calc(var(--u)*1)}
+.pz-tabla{display:grid;grid-template-rows:auto repeat(8,minmax(0,1fr));min-height:0}
+.pz-fila{display:grid;grid-template-columns:calc(var(--u)*11.4) minmax(0,1fr) calc(var(--u)*17) calc(var(--u)*7) calc(var(--u)*13.5) calc(var(--u)*11);
+  column-gap:calc(var(--u)*1.4);align-items:center;padding:0 calc(var(--u)*1.1);border-bottom:1px solid var(--linea);min-height:0}
+.pz-fila.enc{font-size:calc(var(--u)*1.02);color:var(--texto3);padding-bottom:calc(var(--u)*0.5);border-bottom-color:transparent}
+.pz-fila.cambio{box-shadow:inset calc(var(--u)*0.32) 0 0 var(--acento);background:rgba(255,92,53,.07)}
+.pz-der{text-align:right;justify-self:end}
+.pz-placa{display:inline-flex;align-items:center;justify-content:center;position:relative;box-sizing:border-box;min-width:calc(var(--u)*9.8);
+  height:calc(var(--u)*2.9);padding:0 calc(var(--u)*1);background:var(--placa);color:var(--tinta);border-radius:calc(var(--u)*0.45);
+  font-weight:800;font-stretch:108%;font-size:calc(var(--u)*1.55);letter-spacing:.06em;white-space:nowrap;max-width:100%;overflow:hidden;
+  box-shadow:inset 0 0 0 calc(var(--u)*0.11) var(--tinta),inset 0 0 0 calc(var(--u)*0.26) var(--placa),0 calc(var(--u)*0.14) 0 rgba(0,0,0,.45)}
+.pz-placa::before,.pz-placa::after{content:"";position:absolute;top:calc(var(--u)*0.42);width:calc(var(--u)*0.26);height:calc(var(--u)*0.26);border-radius:50%;background:#A3A9B1}
+.pz-placa::before{left:calc(var(--u)*0.42)}.pz-placa::after{right:calc(var(--u)*0.42)}
+.pz-placa.sin{background:transparent;color:var(--texto2);box-shadow:inset 0 0 0 calc(var(--u)*0.11) var(--linea);font-weight:700;letter-spacing:.02em}
+.pz-placa.sin::before,.pz-placa.sin::after{display:none}
+.pz-placa.chica{min-width:calc(var(--u)*7.6);height:calc(var(--u)*2.15);font-size:calc(var(--u)*1.12);padding:0 calc(var(--u)*0.8)}
+.pz-placa.chica::before,.pz-placa.chica::after{top:calc(var(--u)*0.3);width:calc(var(--u)*0.2);height:calc(var(--u)*0.2)}
+.pz-celda{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.pz-auto{font-size:calc(var(--u)*1.6);font-weight:700;font-stretch:96%;display:flex;align-items:center;min-width:0;line-height:1.15}
+.pz-recorte{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pz-color{width:calc(var(--u)*1.05);height:calc(var(--u)*1.05);border-radius:50%;margin-right:calc(var(--u)*0.65);flex-shrink:0;box-shadow:0 0 0 1px rgba(255,255,255,.4)}
+.pz-sub{font-size:calc(var(--u)*1.15);color:var(--texto2);display:flex;align-items:center;min-width:0;margin-top:calc(var(--u)*0.3);line-height:1.15;white-space:nowrap}
+.pz-folio{flex-shrink:0;font-size:.85em;border:1px solid var(--linea);border-radius:calc(var(--u)*0.3);padding:0 calc(var(--u)*0.4);margin-left:calc(var(--u)*0.6);color:var(--texto3)}
+.pz-tag{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--acento);font-weight:700;margin-left:calc(var(--u)*0.7)}
+.pz-pasos{display:inline-grid;grid-template-columns:repeat(5,minmax(0,1fr));column-gap:calc(var(--u)*0.22);width:calc(var(--u)*5.4);margin-right:calc(var(--u)*0.8);flex-shrink:0}
+.pz-pasos i{height:calc(var(--u)*0.55);border-radius:calc(var(--u)*0.3);background:var(--linea)}
+.pz-pasos i.hecho{background:var(--texto3)}
+.pz-etapa-nombre{font-size:calc(var(--u)*1.45);font-weight:700;line-height:1.15;display:flex;align-items:center;min-width:0;white-space:nowrap}
+.pz-transito{color:#8DB8FF;font-weight:700}
+.pz-dias b{display:block;font-size:calc(var(--u)*2.4);font-weight:800;font-stretch:115%;line-height:1;font-variant-numeric:tabular-nums}
+.pz-dias small{display:block;font-size:calc(var(--u)*1);color:var(--texto2);margin-top:calc(var(--u)*0.2)}
+.pz-pildora{display:inline-flex;align-items:center;align-self:flex-start;height:calc(var(--u)*2.0);padding:0 calc(var(--u)*0.95);border-radius:calc(var(--u)*1.1);
+  font-size:calc(var(--u)*1.3);font-weight:800;color:var(--tinta);white-space:nowrap}
+.pz-pildora.sin{background:transparent!important;color:var(--texto2);box-shadow:inset 0 0 0 1px var(--linea);font-weight:600}
+.pz-ref b{font-size:calc(var(--u)*1.4);font-weight:700;font-variant-numeric:tabular-nums}
+.pz-barra{height:calc(var(--u)*0.5);background:var(--linea);border-radius:calc(var(--u)*0.3);overflow:hidden;flex:1 1 auto;max-width:calc(var(--u)*5);min-width:calc(var(--u)*2);margin-left:calc(var(--u)*0.8)}
+.pz-ref-linea{display:flex;align-items:center;line-height:1.15}
+.pz-barra i{display:block;height:100%;background:#34C77B}
+.pz-atraso{color:#FF7B73;font-weight:700}
+.pz-nada{color:var(--texto3);font-size:calc(var(--u)*1.3)}
+.pz-etapas{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));column-gap:calc(var(--u)*1.1);min-height:0}
+.pz-columna{background:var(--panel);border-radius:calc(var(--u)*0.9);display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;overflow:hidden}
+.pz-col-cab{display:flex;align-items:center;justify-content:space-between;padding:calc(var(--u)*0.9) calc(var(--u)*1.2) calc(var(--u)*0.8);border-top:calc(var(--u)*0.42) solid var(--c)}
+.pz-col-nombre{font-size:calc(var(--u)*1.5);font-weight:800;font-stretch:110%}
+.pz-col-num{font-size:calc(var(--u)*2.5);font-weight:800;font-stretch:122%;font-variant-numeric:tabular-nums;line-height:1}
+.pz-col-cuerpo{display:grid;grid-auto-rows:min-content;row-gap:calc(var(--u)*0.65);padding:0 calc(var(--u)*0.85) calc(var(--u)*0.85);min-height:0;overflow:hidden;align-content:start}
+.pz-tarjeta{background:var(--panel2);border-radius:calc(var(--u)*0.6);padding:calc(var(--u)*0.7) calc(var(--u)*0.8);display:grid;row-gap:calc(var(--u)*0.45);min-width:0}
+.pz-tarjeta.fuera{background:transparent;box-shadow:inset 0 0 0 1px var(--linea)}
+.pz-tarjeta-fila{display:flex;align-items:center;justify-content:space-between;min-width:0}
+.pz-tarjeta .pz-auto{font-size:calc(var(--u)*1.25)}
+.pz-tarjeta .pz-sub{margin-top:0;font-size:calc(var(--u)*1.05)}
+.pz-mini{font-size:calc(var(--u)*1.15);font-weight:800;font-variant-numeric:tabular-nums;flex-shrink:0;margin-left:calc(var(--u)*0.6)}
+.pz-pildora.chica{height:calc(var(--u)*1.75);font-size:calc(var(--u)*1.05);padding:0 calc(var(--u)*0.75)}
+.pz-mas{font-size:calc(var(--u)*1.15);color:var(--texto2);padding:calc(var(--u)*0.2) calc(var(--u)*0.3)}
+.pz-vacio-col{font-size:calc(var(--u)*1.15);color:var(--texto3);padding:calc(var(--u)*0.6) calc(var(--u)*0.3)}
+.pz-salidas .pz-fila{grid-template-columns:calc(var(--u)*12.5) calc(var(--u)*11.4) minmax(0,1fr) calc(var(--u)*15) calc(var(--u)*13.5)}
+.pz-salida b{display:block;font-size:calc(var(--u)*1.75);font-weight:800;font-stretch:112%;line-height:1.05}
+.pz-salida small{display:block;font-size:calc(var(--u)*1.1);color:var(--texto2);margin-top:calc(var(--u)*0.3)}
+.pz-nota{font-size:calc(var(--u)*1.15);color:var(--texto2);padding:calc(var(--u)*0.6) calc(var(--u)*1.1) 0}
+.pz-refs{display:grid;grid-template-columns:calc(var(--u)*29) minmax(0,1fr);column-gap:calc(var(--u)*1.6);min-height:0}
+.pz-refs-resumen{background:var(--panel);border-radius:calc(var(--u)*0.9);padding:calc(var(--u)*1.6) calc(var(--u)*1.8);display:flex;flex-direction:column;min-height:0}
+.pz-refs-total{display:flex;align-items:baseline}
+.pz-refs-total b{font-size:calc(var(--u)*6);font-weight:800;font-stretch:122%;line-height:.95;font-variant-numeric:tabular-nums;margin-right:calc(var(--u)*1)}
+.pz-refs-total span{font-size:calc(var(--u)*1.5);color:var(--texto2);line-height:1.2}
+.pz-apilada{display:flex;height:calc(var(--u)*1.4);border-radius:calc(var(--u)*0.7);overflow:hidden;margin:calc(var(--u)*1.5) 0 calc(var(--u)*1.2);background:var(--linea)}
+.pz-apilada i{display:block;height:100%}.pz-apilada i+i{margin-left:2px}
+.pz-leyenda{display:grid;row-gap:calc(var(--u)*0.6);font-size:calc(var(--u)*1.3)}
+.pz-leyenda div{display:flex;align-items:center}
+.pz-leyenda i{width:calc(var(--u)*1.05);height:calc(var(--u)*1.05);border-radius:50%;margin-right:calc(var(--u)*0.75);flex-shrink:0}
+.pz-leyenda b{margin-left:auto;font-variant-numeric:tabular-nums}
+.pz-refs-aviso{margin-top:auto;font-size:calc(var(--u)*1.3);font-weight:700;color:#FF7B73}
+.pz-refs-lista .pz-fila{grid-template-columns:calc(var(--u)*11.4) minmax(0,1fr) calc(var(--u)*11) calc(var(--u)*17)}
+.pz-refs-lista{grid-template-rows:auto repeat(7,minmax(0,1fr))}
+.pz-vacio{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:0}
+.pz-vacio b{font-size:calc(var(--u)*2.4);font-weight:800;font-stretch:112%}
+.pz-vacio span{font-size:calc(var(--u)*1.4);color:var(--texto2);margin-top:calc(var(--u)*0.8);max-width:calc(var(--u)*60)}
+.pz-progreso{position:absolute;left:0;bottom:calc(var(--u)*-0.7);height:2px;width:0;background:var(--acento);animation:pz-avanza linear forwards}
+@keyframes pz-avanza{from{width:0}to{width:100%}}
+.pz-pie{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:calc(var(--u)*1.8);align-items:center;background:var(--panel);
+  border-radius:calc(var(--u)*0.9);padding:0 calc(var(--u)*1.2);height:calc(var(--u)*3.9);box-sizing:border-box}
+.pz-alerta{display:flex;align-items:center;min-width:0;animation:pz-entra .5s ease both}
+.pz-alerta-etq{flex-shrink:0;font-size:calc(var(--u)*1.15);font-weight:800;color:var(--tinta);padding:calc(var(--u)*0.32) calc(var(--u)*0.8);border-radius:calc(var(--u)*0.4);margin-right:calc(var(--u)*1)}
+.pz-alerta-auto{font-size:calc(var(--u)*1.45);font-weight:700;white-space:nowrap;margin-left:calc(var(--u)*1);flex-shrink:0;max-width:calc(var(--u)*24);overflow:hidden;text-overflow:ellipsis}
+.pz-alerta-txt{font-size:calc(var(--u)*1.35);color:var(--texto2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:calc(var(--u)*1);min-width:0}
+.pz-alerta-n{flex-shrink:0;font-size:calc(var(--u)*1);color:var(--texto3);margin-left:calc(var(--u)*1.2)}
+.pz-ok{font-size:calc(var(--u)*1.35);color:var(--texto2)}
+.pz-red{font-size:calc(var(--u)*1.02);color:var(--texto3);white-space:nowrap}
+.pz-red.mal{color:#F5B027;font-weight:700}
+.pz-puntos{display:flex;align-items:center}
+.pz-puntos i{width:calc(var(--u)*0.65);height:calc(var(--u)*0.65);border-radius:50%;background:var(--linea);margin-left:calc(var(--u)*0.45)}
+.pz-puntos i.on{background:var(--acento)}
+.pz-controles{position:absolute;left:50%;bottom:calc(var(--u)*6.4);transform:translate(-50%,10px);display:flex;align-items:center;background:rgba(30,34,40,.97);
+  border:1px solid var(--linea);border-radius:999px;padding:6px;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;box-shadow:0 12px 40px rgba(0,0,0,.55);z-index:5}
+.pz-controles.visible{opacity:1;pointer-events:auto;transform:translate(-50%,0)}
+.pz-controles button{background:transparent;color:var(--texto);border:none;border-radius:999px;padding:0 18px;height:44px;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap}
+.pz-controles button:hover{background:var(--panel2)}
+.pz-controles .flecha{font-size:22px;padding:0 14px}
+.pz-controles .peligro{color:#FF9C8F}
+.pz-controles hr{width:1px;height:24px;border:none;background:var(--linea);margin:0 4px}
+.pz-raiz button:focus-visible{outline:3px solid var(--acento);outline-offset:2px}
+.pz-mensaje{width:calc(var(--u)*62);max-width:92vw;text-align:center}
+.pz-mensaje img{height:calc(var(--u)*2.8);min-height:24px;width:auto;margin:0 auto calc(var(--u)*2.4);display:block}
+.pz-mensaje h1{font-size:calc(var(--u)*2.6);font-weight:800;font-stretch:112%;margin:0 0 calc(var(--u)*1)}
+.pz-mensaje p{font-size:calc(var(--u)*1.45);color:var(--texto2);line-height:1.45;margin:0 0 calc(var(--u)*2)}
+.pz-boton{background:var(--acento);color:#fff;border:none;border-radius:12px;padding:12px 22px;font-size:16px;font-weight:700;cursor:pointer;margin:0 6px}
+.pz-boton.sec{background:transparent;color:var(--texto);box-shadow:inset 0 0 0 1px var(--linea)}
+@media (max-width:760px){
+  .pz-raiz{position:fixed;display:block;overflow-y:auto;-webkit-overflow-scrolling:touch;--u:4.2px}
+  .pz-mensaje{margin:22vh auto 0;width:auto;padding:0 20px}
+  .pz-mensaje h1{font-size:22px}.pz-mensaje p{font-size:15px}
+}
+.pz-compacta{padding:16px 16px 28px;max-width:560px;margin:0 auto}
+.pz-c-cab{margin-bottom:16px}
+.pz-c-cab .pz-c-fila{display:flex;align-items:center;justify-content:space-between}
+.pz-c-cab .pz-logo-rx{height:17px}
+.pz-c-cab .pz-hora{font-size:22px}
+.pz-c-taller{display:flex;align-items:center;margin-top:14px;min-width:0}
+.pz-c-taller .pz-logo-taller{width:40px;height:40px;border-radius:10px}
+.pz-c-taller .pz-taller{margin-left:12px}
+.pz-c-taller .pz-taller-nombre{font-size:19px;max-width:calc(100vw - 100px)}
+.pz-c-taller .pz-taller-sub{font-size:12px;margin-top:2px}
+.pz-compacta .pz-cifras{grid-template-columns:repeat(2,minmax(0,1fr));border-radius:12px}
+.pz-compacta .pz-cifra{padding:12px 14px;border-left:none;border-top:1px solid var(--linea)}
+.pz-compacta .pz-cifra b{font-size:26px;margin-right:8px}.pz-compacta .pz-cifra span{font-size:13px}
+.pz-c-titulo{font-size:17px;font-weight:800;font-stretch:112%;margin:22px 0 10px}
+.pz-c-alerta{display:flex;align-items:center;flex-wrap:wrap;background:var(--panel);border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.pz-c-alerta .pz-alerta-etq{font-size:12px;padding:3px 8px;border-radius:6px;margin-right:8px}
+.pz-c-alerta span{font-size:14px;margin-top:4px}
+.pz-c-tarjeta{background:var(--panel);border-radius:12px;padding:12px 14px;margin-bottom:8px}
+.pz-c-fila{display:flex;align-items:center;justify-content:space-between}
+.pz-c-tarjeta .pz-placa{min-width:0;height:30px;font-size:15px;padding:0 13px;border-radius:5px;
+  box-shadow:inset 0 0 0 1.5px var(--tinta),inset 0 0 0 3.5px var(--placa),0 1px 0 rgba(0,0,0,.45)}
+.pz-c-tarjeta .pz-placa::before,.pz-c-tarjeta .pz-placa::after{top:5px;width:3.5px;height:3.5px}
+.pz-c-tarjeta .pz-placa::before{left:5px}.pz-c-tarjeta .pz-placa::after{right:5px}
+.pz-c-auto{font-size:15px;font-weight:700;margin-top:10px;display:flex;align-items:center}
+.pz-c-auto .pz-color{width:11px;height:11px;margin-right:7px}
+.pz-c-sub{font-size:13px;color:var(--texto2);margin-top:4px}
+.pz-c-tarjeta .pz-pildora{height:26px;font-size:13px;padding:0 10px;border-radius:13px}
+.pz-c-salir{display:block;width:100%;margin-top:18px;background:transparent;color:var(--texto2);border:1px solid var(--linea);border-radius:12px;padding:12px;font-size:14px}
+@media (prefers-reduced-motion:reduce){
+  .pz-diapo,.pz-alerta{animation:none}
+  .pz-progreso{display:none}
+  .pz-tablero,.pz-controles{transition:none}
+}
+`;
+
+function RelojPizarron({ sinFecha = false }) {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => { const iv = setInterval(() => setT(new Date()), 5000); return () => clearInterval(iv); }, []);
+  const h = t.getHours();
+  return (
+    <div className="pz-reloj" aria-label="Hora actual">
+      <div className="pz-hora">{h % 12 || 12}:{String(t.getMinutes()).padStart(2, "0")}<small>{h < 12 ? "a. m." : "p. m."}</small></div>
+      {!sinFecha && <div className="pz-fecha">{conMayuscula(DIAS_LARGOS[t.getDay()])} {t.getDate()} de {MESES_LARGOS[t.getMonth()]}</div>}
+    </div>
+  );
+}
+
+function PlacaTV({ o, chica }) {
+  return o.placa
+    ? <span className={"pz-placa" + (chica ? " chica" : "")} title={"Placas " + o.placa}>{o.placa.toUpperCase()}</span>
+    : <span className={"pz-placa sin" + (chica ? " chica" : "")} title="Sin placas registradas">{o.id}</span>;
+}
+
+function PildoraEntrega({ o, hoyStr, chica }) {
+  const e = describirEntrega(o, hoyStr);
+  return <span className={"pz-pildora" + (chica ? " chica" : "") + (e.estado === "sin" ? " sin" : "")} style={{ background: e.info.tv }}>{e.corta}</span>;
+}
+
+const sinAnio = v => String(v || "").replace(/\s+(19|20)\d{2}$/, "");
+function AutoTV({ o, recortar = true, corto = false }) {
+  const color = colorDeAuto(o.color);
+  return (
+    <span className="pz-auto">
+      {color && <i className="pz-color" style={{ background: color }} aria-hidden="true" />}
+      <span className={recortar ? "pz-recorte" : ""}>{(corto ? sinAnio(o.vehiculo) : o.vehiculo) || "Unidad sin datos"}</span>
+    </span>
+  );
+}
+
+function FilaUnidadTV({ o, hoyStr, cambio }) {
+  const idx = Math.max(0, PASOS.indexOf(o.estado));
+  const etapa = ESTADOS[idx];
+  const dias = diasDesdeAlta(o);
+  const dT = diasEnTransito(o);
+  const e = describirEntrega(o, hoyStr);
+  const rep = reprogramacionesDe(o);
+  const refs = o.refacciones || [];
+  const recibidas = refs.filter(r => estadoRefaccion(r) === "recibida").length;
+  const atrasadas = refs.filter(r => diasAtrasoRef(r) > 0).length;
+  const proxima = refs.filter(r => estadoRefaccion(r) !== "recibida" && r.fechaPromesa).sort((a, b) => a.fechaPromesa.localeCompare(b.fechaPromesa))[0];
+  return (
+    <div className={"pz-fila" + (cambio ? " cambio" : "")} role="row" data-orden={o.id}>
+      <span role="cell"><PlacaTV o={o} /></span>
+      <span role="cell" className="pz-celda">
+        <AutoTV o={o} />
+        <span className="pz-sub"><span className="pz-recorte">{o.cliente || "Cliente"}</span><span className="pz-folio">{o.id}</span>{cambio && <span className="pz-tag">{cambio.texto}</span>}</span>
+      </span>
+      <span role="cell" className="pz-celda">
+        <span className="pz-etapa-nombre"><span className="pz-pasos" aria-hidden="true">{PASOS.map((p, j) => <i key={p} className={j < idx ? "hecho" : ""} style={j === idx ? { background: COLOR_ETAPA_TV[p] } : undefined} />)}</span>{etapa.label}</span>
+        <span className="pz-sub" style={{ paddingLeft: "calc(var(--u)*6.2)" }}>{o.enTransito ? <span className="pz-transito">En tránsito{dT !== null ? `, ${dT} d` : ""}</span> : <span className="pz-recorte">{o.tecnico || "\u00a0"}</span>}</span>
+      </span>
+      <span role="cell" className="pz-dias pz-der">{dias === null ? <b style={{ color: "var(--texto3)" }}>–</b> : <b style={{ color: colorDiasTV(dias) }}>{dias > DIAS_ALERTA ? "⚠" : ""}{dias}</b>}<small>{dias === 1 ? "día" : "días"}</small></span>
+      <span role="cell" className="pz-celda">
+        <PildoraEntrega o={o} hoyStr={hoyStr} />
+        <span className="pz-sub">{(e.detalle + (rep > 0 ? `${e.detalle ? ", " : ""}${rep === 1 ? "1 cambio" : rep + " cambios"}` : "")) || "\u00a0"}</span>
+      </span>
+      <span role="cell" className="pz-celda pz-ref">
+        {refs.length === 0 ? <span className="pz-nada">Sin piezas</span> : <>
+          <span className="pz-ref-linea"><b>{recibidas} de {refs.length}</b><span className="pz-barra" aria-hidden="true"><i style={{ width: (100 * recibidas / refs.length) + "%" }} /></span></span>
+          <span className="pz-sub">{atrasadas ? <span className="pz-atraso">⚠ {atrasadas} atrasada{atrasadas === 1 ? "" : "s"}</span>
+            : recibidas === refs.length ? "Completas" : proxima ? `Llega ${fechaConDia(proxima.fechaPromesa)}` : "Por llegar"}</span>
+        </>}
+      </span>
+    </div>
+  );
+}
+
+function DiapoUnidades({ filas, pagina, paginas, hoyStr, cambios, pausa }) {
+  return (
+    <section className="pz-diapo" aria-label="Unidades en el taller">
+      <div className="pz-titulo"><h2>Unidades en el taller{pausa && <span className="pz-pausa">En pausa</span>}</h2>
+        <p>De la más antigua a la más reciente{paginas > 1 ? `, página ${pagina + 1} de ${paginas}` : ""}</p></div>
+      <div className="pz-tabla" role="table">
+        <div className="pz-fila enc" role="row"><span role="columnheader">Placas</span><span role="columnheader">Unidad y cliente</span><span role="columnheader">Etapa</span><span role="columnheader" className="pz-der">En taller</span><span role="columnheader">Entrega</span><span role="columnheader">Refacciones</span></div>
+        {filas.map(o => <FilaUnidadTV key={o.id} o={o} hoyStr={hoyStr} cambio={cambios[o.id]} />)}
+      </div>
+    </section>
+  );
+}
+
+const MAX_TARJETAS_ETAPA = 4;
+function DiapoEtapas({ unidades, hoyStr, pausa }) {
+  return (
+    <section className="pz-diapo" aria-label="Unidades por etapa">
+      <div className="pz-titulo"><h2>Por etapa{pausa && <span className="pz-pausa">En pausa</span>}</h2><p>Las unidades en tránsito van al final de su etapa, con contorno</p></div>
+      <div className="pz-etapas">
+        {ESTADOS.map(e => {
+          const lista = unidades.filter(o => (PASOS.includes(o.estado) ? o.estado : "presupuesto") === e.key);
+          const orden = [...lista.filter(o => !o.enTransito), ...lista.filter(o => o.enTransito)];
+          return (
+            <div className="pz-columna" key={e.key}>
+              <div className="pz-col-cab" style={{ "--c": COLOR_ETAPA_TV[e.key] }}><span className="pz-col-nombre">{e.label}</span><span className="pz-col-num">{lista.length}</span></div>
+              <div className="pz-col-cuerpo">
+                {orden.slice(0, MAX_TARJETAS_ETAPA).map(o => { const d = diasDesdeAlta(o); return (
+                  <div key={o.id} className={"pz-tarjeta" + (o.enTransito ? " fuera" : "")}>
+                    <div className="pz-tarjeta-fila"><PlacaTV o={o} chica /><PildoraEntrega o={o} hoyStr={hoyStr} chica /></div>
+                    <div className="pz-tarjeta-fila"><AutoTV o={o} corto />{o.enTransito
+                      ? <span className="pz-mini pz-transito">Tránsito</span>
+                      : d !== null && <span className="pz-mini" style={{ color: colorDiasTV(d) }}>{d} d</span>}</div>
+                  </div>); })}
+                {orden.length > MAX_TARJETAS_ETAPA && <div className="pz-mas">y {orden.length - MAX_TARJETAS_ETAPA} más</div>}
+                {orden.length === 0 && <div className="pz-vacio-col">Sin unidades</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const FILAS_ENTREGAS = 8;
+function DiapoEntregas({ unidades, hoyStr, pausa }) {
+  const conFecha = unidades.filter(o => fechaEntregaOrden(o))
+    .sort((a, b) => fechaEntregaOrden(a).localeCompare(fechaEntregaOrden(b)) || fechaAlta(a).localeCompare(fechaAlta(b)) || numFolio(a) - numFolio(b));
+  const sinFecha = unidades.length - conFecha.length;
+  const visibles = conFecha.slice(0, FILAS_ENTREGAS);
+  const resto = conFecha.length - visibles.length;
+  return (
+    <section className="pz-diapo" aria-label="Próximas entregas">
+      <div className="pz-titulo"><h2>Entregas{pausa && <span className="pz-pausa">En pausa</span>}</h2><p>Fechas prometidas a los clientes, de la más próxima a la más lejana</p></div>
+      {conFecha.length === 0
+        ? <div className="pz-vacio"><b>Aún no hay fechas de entrega</b><span>Se ponen desde la sección Pizarrón de la app. En cuanto alguien agregue una, aparecerá aquí.</span></div>
+        : <div className="pz-tabla pz-salidas" role="table">
+            <div className="pz-fila enc" role="row"><span role="columnheader">Fecha</span><span role="columnheader">Placas</span><span role="columnheader">Unidad y cliente</span><span role="columnheader">Etapa</span><span role="columnheader">Estado</span></div>
+            {visibles.map(o => {
+              const e = describirEntrega(o, hoyStr), f = fechaEntregaOrden(o), rep = reprogramacionesDe(o);
+              const etapa = ESTADOS[Math.max(0, PASOS.indexOf(o.estado))];
+              return (
+                <div className="pz-fila" role="row" key={o.id}>
+                  <span role="cell" className="pz-salida"><b>{conMayuscula(fechaConDia(f))}</b><small>{rep > 0 ? (rep === 1 ? "Reprogramada 1 vez" : `Reprogramada ${rep} veces`) : "Fecha original"}</small></span>
+                  <span role="cell"><PlacaTV o={o} /></span>
+                  <span role="cell" className="pz-celda"><AutoTV o={o} /><span className="pz-sub"><span className="pz-recorte">{o.cliente || "Cliente"}</span><span className="pz-folio">{o.id}</span></span></span>
+                  <span role="cell" className="pz-celda"><span className="pz-etapa-nombre">{etapa.label}</span><span className="pz-sub">{o.enTransito ? <span className="pz-transito">En tránsito</span> : <span className="pz-recorte">{o.tecnico || "\u00a0"}</span>}</span></span>
+                  <span role="cell" className="pz-celda"><span className="pz-pildora" style={{ background: e.info.tv }}>{e.estado === "vencida" ? "Vencida" : e.estado === "hoy" ? "Hoy" : e.estado === "manana" ? "Mañana" : e.estado === "semana" ? conMayuscula(e.detalle) : "A tiempo"}</span>
+                    <span className="pz-sub">{e.estado === "vencida" || e.estado === "despues" ? e.detalle : "\u00a0"}</span></span>
+                </div>
+              );
+            })}
+            {(sinFecha > 0 || resto > 0) && <div className="pz-nota">{[resto > 0 ? `${resto} entrega${resto === 1 ? "" : "s"} más adelante` : "", sinFecha > 0 ? `${sinFecha} unidad${sinFecha === 1 ? "" : "es"} sin fecha de entrega` : ""].filter(Boolean).join(" y ")}</div>}
+          </div>}
+    </section>
+  );
+}
+
+const FILAS_REFACCIONES = 7;
+function DiapoRefacciones({ unidades, pausa }) {
+  const res = resumenRefacciones(unidades);
+  const segmentos = ESTADOS_REFACCION.filter(e => e.key !== "recibida").map(e => ({ ...e, valor: res.porEstado[e.key] || 0 }));
+  const esperando = unidades.filter(o => (o.refacciones || []).some(r => estadoRefaccion(r) !== "recibida"))
+    .map(o => { const refs = o.refacciones; const atraso = Math.max(0, ...refs.map(diasAtrasoRef)); return { o, atraso, recibidas: refs.filter(r => estadoRefaccion(r) === "recibida").length }; })
+    .sort((a, b) => b.atraso - a.atraso || fechaAlta(a.o).localeCompare(fechaAlta(b.o)));
+  const visibles = esperando.slice(0, FILAS_REFACCIONES);
+  return (
+    <section className="pz-diapo" aria-label="Refacciones pendientes">
+      <div className="pz-titulo"><h2>Esperando refacciones{pausa && <span className="pz-pausa">En pausa</span>}</h2><p>{res.unidadesEsperando} unidad{res.unidadesEsperando === 1 ? "" : "es"} con piezas por llegar</p></div>
+      <div className="pz-refs">
+        <div className="pz-refs-resumen">
+          <div className="pz-refs-total"><b>{res.pendientes}</b><span>refacciones<br />pendientes</span></div>
+          <div className="pz-apilada" role="img" aria-label={segmentos.map(s => `${s.label}: ${s.valor}`).join(", ")}>
+            {segmentos.filter(s => s.valor > 0).map(s => <i key={s.key} style={{ width: (100 * s.valor / Math.max(1, res.pendientes)) + "%", background: s.color }} />)}
+          </div>
+          <div className="pz-leyenda">{segmentos.map(s => <div key={s.key}><i style={{ background: s.color }} />{s.label}<b>{s.valor}</b></div>)}</div>
+          {res.atrasadas > 0 && <div className="pz-refs-aviso">⚠ {res.atrasadas} con la fecha de llegada vencida</div>}
+        </div>
+        <div className="pz-tabla pz-refs-lista" role="table">
+          <div className="pz-fila enc" role="row"><span role="columnheader">Placas</span><span role="columnheader">Unidad</span><span role="columnheader">Recibidas</span><span role="columnheader">Lo que falta</span></div>
+          {visibles.map(({ o, atraso, recibidas }) => {
+            const pend = o.refacciones.filter(r => estadoRefaccion(r) !== "recibida");
+            const peor = atraso > 0 ? pend.find(r => diasAtrasoRef(r) === atraso) : pend.filter(r => r.fechaPromesa).sort((a, b) => a.fechaPromesa.localeCompare(b.fechaPromesa))[0];
+            return (
+              <div className="pz-fila" role="row" key={o.id}>
+                <span role="cell"><PlacaTV o={o} /></span>
+                <span role="cell" className="pz-celda"><AutoTV o={o} /><span className="pz-sub">{o.enTransito ? <span className="pz-transito">En tránsito</span> : <span className="pz-recorte">{o.cliente || ""}</span>}</span></span>
+                <span role="cell" className="pz-celda pz-ref"><span className="pz-ref-linea"><b>{recibidas} de {o.refacciones.length}</b><span className="pz-barra" aria-hidden="true"><i style={{ width: (100 * recibidas / o.refacciones.length) + "%" }} /></span></span></span>
+                <span role="cell" className="pz-celda">
+                  <span className="pz-auto" style={{ fontSize: "calc(var(--u)*1.35)" }}><span className="pz-recorte">{peor ? peor.nombre || "Refacción" : pend[0].nombre || "Refacción"}{pend.length > 1 ? ` y ${pend.length - 1} más` : ""}</span></span>
+                  <span className="pz-sub">{atraso > 0 ? <span className="pz-atraso">⚠ {atraso} día{atraso === 1 ? "" : "s"} de atraso</span> : peor ? `Llega ${fechaConDia(peor.fechaPromesa)}` : infoEstadoRef(estadoRefaccion(pend[0])).label}</span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Versión en lista para pantallas angostas (un celular): mismas cifras, alertas y unidades
+function PizarronCompacto({ marca, cifras, alertas, unidades, hoyStr, salir }) {
+  return (
+    <div className="pz-compacta">
+      {marca}
+      {cifras}
+      {alertas.length > 0 && <>
+        <div className="pz-c-titulo">Alertas</div>
+        {alertas.map(a => (
+          <div className="pz-c-alerta" key={a.clave}>
+            <span className="pz-alerta-etq" style={{ background: TIPOS_ALERTA[a.tipo].tv }}>{TIPOS_ALERTA[a.tipo].label}</span>
+            <span><b>{a.o.placa || a.o.id}</b> {a.o.vehiculo}{a.detalle ? `: ${a.detalle}` : ""}</span>
+          </div>
+        ))}
+      </>}
+      <div className="pz-c-titulo">Unidades, de la más antigua a la más reciente</div>
+      {unidades.length === 0 && <div className="pz-c-sub">No hay unidades activas en el taller.</div>}
+      {unidades.map(o => { const d = diasDesdeAlta(o); const color = colorDeAuto(o.color); return (
+        <div className="pz-c-tarjeta" key={o.id}>
+          <div className="pz-c-fila"><PlacaTV o={o} /><PildoraEntrega o={o} hoyStr={hoyStr} /></div>
+          <div className="pz-c-auto">{color && <i className="pz-color" style={{ background: color }} />}{o.vehiculo || "Unidad sin datos"}</div>
+          <div className="pz-c-sub">{[o.cliente, (ESTADOS.find(e => e.key === o.estado) || ESTADOS[0]).label, d !== null ? `${d} día${d === 1 ? "" : "s"} en taller` : "", o.enTransito ? "en tránsito" : ""].filter(Boolean).join(", ")}</div>
+        </div>); })}
+      {salir}
+    </div>
+  );
+}
+
+function PizarronPantalla({ usuario, esPantalla, ordenesDemo, onSalir, onCerrarSesion, onRevisarPerfil }) {
+  const datos = usePizarron({ usuario, ordenesDemo, onSinAcceso: onRevisarPerfil });
+  const [, setPulso] = useState(0);                  // vuelve a dibujar cada 30 s (cambia el día, vencen fechas)
+  const [indice, setIndice] = useState(0);
+  const [pausa, setPausa] = useState(false);
+  const [vuelta, setVuelta] = useState(0);            // reinicia la barra de avance al reanudar
+  const [controles, setControles] = useState(true);
+  const [iAlerta, setIAlerta] = useState(0);
+  const [desfase, setDesfase] = useState(0);
+  const compacta = useMedia("(max-width: 760px)");
+  const hoyStr = hoyLocal();
+
+  useEffect(() => { const iv = setInterval(() => setPulso(p => p + 1), 30 * 1000); return () => clearInterval(iv); }, []);
+  // Mueve el tablero 1–2 px cada 3 minutos para que las TV no se "quemen" con la imagen fija
+  useEffect(() => { const iv = setInterval(() => setDesfase(d => (d + 1) % 4), 3 * 60 * 1000); return () => clearInterval(iv); }, []);
+  // La pantalla no se apaga sola mientras el pizarrón está abierto
+  useEffect(() => {
+    let candado = null;
+    const pedir = () => {
+      if (!navigator.wakeLock || document.hidden) return;
+      navigator.wakeLock.request("screen").then(c => { candado = c; }).catch(() => {});
+    };
+    pedir();
+    const alVolver = () => { if (!document.hidden) pedir(); };
+    document.addEventListener("visibilitychange", alVolver);
+    return () => { document.removeEventListener("visibilitychange", alVolver); try { if (candado) candado.release(); } catch (_) {} };
+  }, []);
+  // Las cuentas de pantalla confirman su rol cada 10 minutos (si se lo cambian, la TV cierra la sesión)
+  useEffect(() => {
+    if (!esPantalla || !onRevisarPerfil) return;
+    const iv = setInterval(() => { if (!document.hidden) onRevisarPerfil(); }, REVISAR_PERFIL_PANTALLA_MS);
+    return () => clearInterval(iv);
+  }, [esPantalla]);
+  // Controles y cursor: aparecen al mover el mouse, tocar o usar el control remoto; se ocultan solos
+  useEffect(() => {
+    let t = null;
+    const mostrar = () => { setControles(true); clearTimeout(t); t = setTimeout(() => setControles(false), 4000); };
+    mostrar();
+    const ev = ["pointermove", "pointerdown", "keydown"];
+    ev.forEach(e => window.addEventListener(e, mostrar));
+    return () => { clearTimeout(t); ev.forEach(e => window.removeEventListener(e, mostrar)); };
+  }, []);
+
+  const unidades = ordenarPorAlta(datos.ordenes, "antiguas");
+  const paginas = Math.max(1, Math.ceil(unidades.length / 8));
+  const diapos = [];
+  for (let p = 0; p < paginas; p++) diapos.push({ clave: "u" + p, tipo: "unidades", pagina: p, ms: 15000 });
+  if (unidades.length) diapos.push({ clave: "etapas", tipo: "etapas", ms: 18000 }, { clave: "entregas", tipo: "entregas", ms: 18000 });
+  if (unidades.some(o => (o.refacciones || []).some(r => estadoRefaccion(r) !== "recibida"))) diapos.push({ clave: "refacciones", tipo: "refacciones", ms: 15000 });
+  const n = diapos.length, i = indice % n, actual = diapos[i];
+  const siguiente = () => { setIndice(x => (x % n + 1) % n); setVuelta(v => v + 1); };
+  const anterior = () => { setIndice(x => (x % n - 1 + n) % n); setVuelta(v => v + 1); };
+  const alternarPausa = () => { setPausa(p => !p); setVuelta(v => v + 1); };
+  useEffect(() => {
+    if (pausa || n <= 1 || compacta) return;
+    const t = setTimeout(() => setIndice(x => (x % n + 1) % n), actual.ms);
+    return () => clearTimeout(t);
+  }, [i, pausa, n, actual.clave, vuelta, compacta]);
+
+  const pantallaCompleta = () => {
+    try {
+      if (document.fullscreenElement) { const p = document.exitFullscreen(); if (p && p.catch) p.catch(() => {}); }
+      else if (document.documentElement.requestFullscreen) { const p = document.documentElement.requestFullscreen({ navigationUI: "hide" }); if (p && p.catch) p.catch(() => {}); }
+    } catch (_) {}
+  };
+  const cerrar = () => { if (confirm("¿Cerrar la sesión de esta pantalla? Para volver a mostrar el pizarrón habrá que iniciar sesión otra vez.")) onCerrarSesion(); };
+  useEffect(() => {
+    const tecla = e => {
+      const enBoton = e.target && (e.target.tagName === "BUTTON" || e.target.tagName === "A");
+      if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === "MediaTrackNext") siguiente();
+      else if (e.key === "ArrowLeft" || e.key === "PageUp" || e.key === "MediaTrackPrevious") anterior();
+      else if ((e.key === " " || e.key === "Enter" || e.key === "MediaPlayPause") && !enBoton) { e.preventDefault(); alternarPausa(); }
+      else if (e.key === "f" || e.key === "F") pantallaCompleta();
+    };
+    window.addEventListener("keydown", tecla);
+    return () => window.removeEventListener("keydown", tecla);
+  }, [n]);
+
+  const alertas = alertasPizarron(unidades, hoyStr, datos.cambios);
+  useEffect(() => {
+    if (alertas.length <= 1) return;
+    const iv = setInterval(() => setIAlerta(x => x + 1), 6000);
+    return () => clearInterval(iv);
+  }, [alertas.length]);
+  const alerta = alertas.length ? alertas[iAlerta % alertas.length] : null;
+
+  const tallerNombre = usuario.tallerNombre || usuario.taller || "Mi taller";
+  const marca = (
+    <header className="pz-cab">
+      <div className="pz-marca">
+        <img src="/img/logo-repairx-blanco.svg" alt="RepairX" className="pz-logo-rx" />
+        <span className="pz-sep" aria-hidden="true" />
+        {usuario.logo ? <img src={usuario.logo} alt="" className="pz-logo-taller" /> : <span className="pz-logo-taller pz-inicial" aria-hidden="true">{tallerNombre.charAt(0).toUpperCase()}</span>}
+        <div className="pz-taller"><div className="pz-taller-nombre">{tallerNombre}</div><div className="pz-taller-sub">Pizarrón del taller</div></div>
+      </div>
+      <RelojPizarron />
+    </header>
+  );
+  const marcaCompacta = (
+    <header className="pz-c-cab">
+      <div className="pz-c-fila"><img src="/img/logo-repairx-blanco.svg" alt="RepairX" className="pz-logo-rx" /><RelojPizarron sinFecha /></div>
+      <div className="pz-c-taller">
+        {usuario.logo ? <img src={usuario.logo} alt="" className="pz-logo-taller" /> : <span className="pz-logo-taller pz-inicial" aria-hidden="true">{tallerNombre.charAt(0).toUpperCase()}</span>}
+        <div className="pz-taller"><div className="pz-taller-nombre">{tallerNombre}</div><div className="pz-taller-sub">Pizarrón del taller</div></div>
+      </div>
+    </header>
+  );
+  const res = resumenPizarron(unidades, hoyStr);
+  const cifras = (
+    <div className="pz-cifras" role="list">
+      {[{ n: res.piso, l: "en el taller" }, { n: res.transito, l: "en tránsito" },
+        { n: res.hoy, l: res.hoy === 1 ? "entrega hoy" : "entregas hoy", color: res.hoy ? ESTADOS_ENTREGA.hoy.tv : null },
+        { n: res.vencida, l: res.vencida === 1 ? "entrega vencida" : "entregas vencidas", color: res.vencida ? ESTADOS_ENTREGA.vencida.tv : null },
+        { n: res.sin, l: "sin fecha de entrega" }].map((c, k) => (
+        <div key={k} role="listitem" className={"pz-cifra" + (c.color ? " llena" : "")} style={c.color ? { background: c.color } : undefined}><b>{c.n}</b><span>{c.l}</span></div>
+      ))}
+    </div>
+  );
+  const DESFASES = [[0, 0], [2, 1], [1, 2], [-1, 1]];
+  const claseRaiz = "pz-raiz" + (!controles && !compacta ? " sin-cursor" : "");
+  const mensaje = (titulo, texto, botones) => (
+    <div className={claseRaiz}><style>{CSS_PIZARRON}</style>
+      <div className="pz-mensaje"><img src="/img/logo-repairx-blanco.svg" alt="RepairX" /><h1>{titulo}</h1><p>{texto}</p>{botones}</div>
+    </div>
+  );
+  const botonSalida = esPantalla
+    ? <button className="pz-boton sec" onClick={cerrar}>Cerrar sesión</button>
+    : <button className="pz-boton sec" onClick={onSalir}>Volver a la app</button>;
+
+  if (datos.sinAcceso) return mensaje("Esta pantalla no tiene acceso",
+    "La cuenta ya no está aprobada para ver el pizarrón. El administrador puede aprobarla otra vez en Equipo, con el rol «Pantalla (TV)».", botonSalida);
+  if (datos.faltaActivar) return mensaje("Falta activar el pizarrón",
+    "El servidor todavía no tiene el pizarrón. El administrador debe correr la migración «migracion_pizarron_pantalla.sql» en Supabase; después esta pantalla se abrirá sola.", botonSalida);
+  if (!datos.cargado) return mensaje("Cargando el pizarrón", datos.sinConexion ? "Sin conexión con el servidor. Se reintentará en cuanto regrese el internet." : `${tallerNombre}`, null);
+
+  const horaOk = datos.ultimaOk ? new Date(datos.ultimaOk) : null;
+  const h12 = horaOk ? horaOk.getHours() % 12 || 12 : 0;
+  const horaTxt = horaOk ? `${h12}:${String(horaOk.getMinutes()).padStart(2, "0")} ${horaOk.getHours() < 12 ? "a. m." : "p. m."}` : "";
+
+  if (compacta) return (
+    <div className={claseRaiz}><style>{CSS_PIZARRON}</style>
+      <PizarronCompacto marca={marcaCompacta} cifras={cifras} alertas={alertas} unidades={unidades} hoyStr={hoyStr}
+        salir={<button className="pz-c-salir" onClick={esPantalla ? cerrar : onSalir}>{esPantalla ? "Cerrar sesión" : "Volver a la app"}</button>} />
+    </div>
+  );
+
+  let diapo;
+  if (!unidades.length) diapo = <section className="pz-diapo"><div className="pz-titulo"><h2>Unidades en el taller</h2></div><div className="pz-vacio"><b>No hay unidades en el taller</b><span>Las órdenes activas aparecerán aquí en cuanto se registren.</span></div></section>;
+  else if (actual.tipo === "unidades") diapo = <DiapoUnidades filas={unidades.slice(actual.pagina * 8, actual.pagina * 8 + 8)} pagina={actual.pagina} paginas={paginas} hoyStr={hoyStr} cambios={datos.cambios} pausa={pausa} />;
+  else if (actual.tipo === "etapas") diapo = <DiapoEtapas unidades={unidades} hoyStr={hoyStr} pausa={pausa} />;
+  else if (actual.tipo === "entregas") diapo = <DiapoEntregas unidades={unidades} hoyStr={hoyStr} pausa={pausa} />;
+  else diapo = <DiapoRefacciones unidades={unidades} pausa={pausa} />;
+
+  return (
+    <div className={claseRaiz}>
+      <style>{CSS_PIZARRON}</style>
+      <div className="pz-tablero" style={{ transform: `translate(${DESFASES[desfase][0]}px, ${DESFASES[desfase][1]}px)` }}>
+        {marca}
+        {cifras}
+        <div className="pz-escenario">
+          <div key={actual.clave + ":" + i} style={{ display: "contents" }}>{diapo}</div>
+          {!pausa && n > 1 && <div key={"p" + i + ":" + vuelta} className="pz-progreso" style={{ animationDuration: actual.ms + "ms" }} />}
+        </div>
+        <footer className="pz-pie">
+          {alerta
+            ? <div className="pz-alerta" key={alerta.clave} role="status">
+                <span className="pz-alerta-etq" style={{ background: TIPOS_ALERTA[alerta.tipo].tv }}>{TIPOS_ALERTA[alerta.tipo].label}</span>
+                <PlacaTV o={alerta.o} chica />
+                <span className="pz-alerta-auto">{alerta.o.vehiculo || alerta.o.id}</span>
+                {alerta.detalle && <span className="pz-alerta-txt">{alerta.detalle}</span>}
+                {alertas.length > 1 && <span className="pz-alerta-n">{(iAlerta % alertas.length) + 1} de {alertas.length}</span>}
+              </div>
+            : <div className="pz-ok" role="status">Sin alertas por ahora: ninguna entrega vencida ni refacciones atrasadas.</div>}
+          <span className={"pz-red" + (datos.sinConexion ? " mal" : "")}>{datos.sinConexion ? `Sin conexión, datos de ${h12 === 1 ? "la" : "las"} ${horaTxt}` : (ordenesDemo ? "Modo demo" : `Actualizado ${horaTxt}`)}</span>
+          <span className="pz-puntos" aria-hidden="true">{diapos.map((d, k) => <i key={d.clave} className={k === i ? "on" : ""} />)}</span>
+        </footer>
+      </div>
+      <div className={"pz-controles" + (controles ? " visible" : "")} role="toolbar" aria-label="Controles del pizarrón">
+        <button className="flecha" onClick={anterior} aria-label="Vista anterior">‹</button>
+        <button onClick={alternarPausa}>{pausa ? "Reanudar" : "Pausar"}</button>
+        <button className="flecha" onClick={siguiente} aria-label="Vista siguiente">›</button>
+        <hr />
+        <button onClick={pantallaCompleta}>Pantalla completa</button>
+        {esPantalla ? <button className="peligro" onClick={cerrar}>Cerrar sesión</button> : <button onClick={onSalir}>Volver a la app</button>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sección "Pizarrón" para el equipo ─────────────────────────────────────────
+const FILTROS_PIZARRON = [
+  { k: "todas", l: "Todas" }, { k: "vencida", l: "Vencidas" }, { k: "hoy", l: "Hoy" },
+  { k: "manana", l: "Mañana" }, { k: "semana", l: "Próximos 6 días" }, { k: "sin", l: "Sin fecha" },
+];
+
+function PlacaClara({ o }) {
+  const base = { display:"inline-flex", alignItems:"center", justifyContent:"center", minWidth:96, height:32, padding:"0 10px", borderRadius:6,
+    fontWeight:800, fontSize:14, letterSpacing:"0.06em", fontStretch:"108%", whiteSpace:"nowrap", flexShrink:0, boxSizing:"border-box" };
+  return o.placa
+    ? <span title={"Placas " + o.placa} style={{ ...base, background:"#FFFFFF", color:BRAND.text, border:"2px solid " + BRAND.text, boxShadow:"0 1px 0 rgba(16,24,40,.25)" }}>{o.placa.toUpperCase()}</span>
+    : <span title="Sin placas registradas" style={{ ...base, background:"transparent", color:BRAND.muted, border:"1.5px dashed " + BRAND.dimmed, letterSpacing:"0.02em" }}>{o.id}</span>;
+}
+
+function ChipEntrega({ o, hoyStr }) {
+  const e = describirEntrega(o, hoyStr);
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", gap:6, background:e.info.fondo, border:"1px solid " + e.info.borde, color:e.info.texto,
+      borderRadius:20, padding:"3px 10px", fontSize:12, fontWeight:700, whiteSpace:"nowrap" }}>
+      <span aria-hidden="true" style={{ width:8, height:8, borderRadius:"50%", background:e.info.texto }} />
+      {e.estado === "sin" ? "Sin fecha" : e.corta}{e.detalle && e.estado !== "sin" ? <span style={{ fontWeight:500 }}>· {e.detalle}</span> : null}
+    </span>
+  );
+}
+
+function EditorEntrega({ o, hoyStr, onGuardar, onCancelar }) {
+  const S = mkS();
+  const antes = fechaEntregaOrden(o);
+  const [fecha, setFecha] = useState(antes || "");
+  const [motivo, setMotivo] = useState("");
+  const [detalle, setDetalle] = useState("");
+  const cambia = fecha !== (antes || "");
+  const pospone = !!antes && !!fecha && fecha > antes;
+  const motivoFinal = motivo === "Otro" ? (detalle.trim() ? "Otro: " + detalle.trim() : "Otro") : motivo;
+  const error = cambia && fecha && fecha < hoyStr ? "La fecha de entrega no puede ser anterior a hoy." : "";
+  const falta = !error && pospone && !motivo ? "Elige el motivo del cambio: queda en la bitácora." : "";
+  const base = antes && antes >= hoyStr ? antes : hoyStr;
+  const historial = (o.bitacora || []).filter(b => b && RE_BITACORA_ENTREGA.test(b.accion || "")).slice(-4).reverse();
+  const guardar = () => onGuardar(fecha, antes ? motivoFinal : "", pospone ? "reprogramada" : "entrega");
+  const quitar = () => { if (confirm(`¿Quitar la fecha de entrega de ${o.id}? La unidad aparecerá como «Sin fecha» en el pizarrón.`)) onGuardar("", motivoFinal, null); };
+  return (
+    <div style={{ background:BRAND.bg, borderRadius:10, padding:"0.85rem", marginTop:12, display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(190px, 1fr))", gap:10 }}>
+        <div><label style={S.label}>{antes ? "Nueva fecha de entrega" : "Fecha de entrega"}</label><CampoFecha value={fecha} min={hoyStr} onChange={setFecha} /></div>
+        {antes && <div><label style={S.label}>Motivo del cambio{pospone ? "" : " (opcional)"}</label>
+          <select style={S.select} value={motivo} onChange={e => setMotivo(e.target.value)}><option value="">Seleccionar…</option>{MOTIVOS_REPROGRAMACION.map(m => <option key={m}>{m}</option>)}</select></div>}
+        {motivo === "Otro" && <div><label style={S.label}>¿Cuál?</label><input style={S.input} value={detalle} maxLength={80} placeholder="Ej. Falla en la cabina de pintura" onChange={e => setDetalle(e.target.value)} /></div>}
+      </div>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+        <span style={{ fontSize:11, color:BRAND.muted }}>{antes && antes >= hoyStr ? "Recorrer:" : "Desde hoy:"}</span>
+        {[{ l:"+1 día", n:1 }, { l:"+2 días", n:2 }, { l:"+3 días", n:3 }, { l:"+1 semana", n:7 }].map(r =>
+          <button key={r.n} type="button" style={{ ...S.btnSm(), padding:"5px 10px", fontSize:12 }} onClick={() => setFecha(sumarDias(base, r.n))}>{r.l}</button>)}
+      </div>
+      {fecha && !error && <div style={{ fontSize:12, color:BRAND.text }}>{antes && cambia ? <>{conMayuscula(fechaLarga(antes))} <span style={{ color:BRAND.muted }}>→</span> <b>{fechaLarga(fecha)}</b></> : <b>{conMayuscula(fechaLarga(fecha))}</b>}</div>}
+      {error && <div role="alert" style={{ fontSize:12, color:"#B91C1C", fontWeight:600 }}>{error}</div>}
+      {falta && <div style={{ fontSize:12, color:"#92400E", fontWeight:600 }}>{falta}</div>}
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+        <button type="button" style={{ ...S.btn, opacity:(!fecha || !cambia || error || falta) ? 0.5 : 1, cursor:(!fecha || !cambia || error || falta) ? "not-allowed" : "pointer" }}
+          disabled={!fecha || !cambia || !!error || !!falta} onClick={guardar}>Guardar fecha</button>
+        {antes && <button type="button" style={S.btnDanger} onClick={quitar}>Quitar fecha</button>}
+        <button type="button" style={{ ...S.btnSm(), padding:"0.5rem 0.9rem", fontSize:12 }} onClick={onCancelar}>Cancelar</button>
+      </div>
+      {historial.length > 0 && (
+        <div style={{ borderTop:"1px solid " + BRAND.border, paddingTop:8 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:BRAND.muted, marginBottom:4 }}>Cambios anteriores</div>
+          {historial.map((b, k) => <div key={k} style={{ fontSize:11, color:BRAND.muted, lineHeight:1.5 }}>{b.accion}{b.usuario ? ` (${b.usuario}, ${b.fecha})` : ` (${b.fecha})`}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilaPizarron({ o, hoyStr, puedeEditar, abierto, onAbrir, onCerrar, onGuardar, onAbrirOrden, taller, aviso, onCerrarAviso }) {
+  const S = mkS();
+  const e = describirEntrega(o, hoyStr);
+  const tel = numeroWhatsApp(o.telefono);
+  const rep = reprogramacionesDe(o);
+  const etapa = ESTADOS.find(x => x.key === o.estado) || ESTADOS[0];
+  const color = colorDeAuto(o.color);
+  const dT = diasEnTransito(o);
+  const borde = e.estado === "vencida" ? "#DC2626" : e.estado === "hoy" ? "#F59E0B" : e.estado === "manana" ? "#3B82F6" : null;
+  const enlaceWA = tipo => "https://wa.me/" + tel + "?text=" + encodeURIComponent(mensajeCliente(o, taller, tipo));
+  const boton = { display:"inline-flex", alignItems:"center", gap:5, borderRadius:8, padding:"6px 11px", fontSize:12, fontWeight:600, cursor:"pointer", textDecoration:"none", whiteSpace:"nowrap" };
+  return (
+    <div data-orden={o.id} style={{ ...S.card, padding:"0.85rem 1rem", ...(borde ? { borderLeft:"4px solid " + borde } : {}) }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+        <PlacaClara o={o} />
+        <div style={{ flex:"1 1 220px", minWidth:0 }}>
+          <div style={{ fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:7, minWidth:0 }}>
+            {color && <span aria-hidden="true" style={{ width:11, height:11, borderRadius:"50%", background:color, boxShadow:"0 0 0 1px rgba(16,24,40,.25)", flexShrink:0 }} />}
+            <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{o.vehiculo || "Unidad sin datos"}</span>
+            {o.color && !color && <span style={{ fontSize:11, color:BRAND.muted, fontWeight:500 }}>{o.color}</span>}
+          </div>
+          <div style={{ fontSize:12, color:BRAND.muted, marginTop:2 }}>{o.cliente || "Sin nombre"}{o.telefono ? <span> · {o.telefono}</span> : null}</div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginTop:6 }}>
+            <span style={{ fontSize:10, fontWeight:700, color:BRAND.accent }}>{o.id}</span>
+            <span style={{ background:etapa.color + "18", color:etapa.color, border:"0.5px solid " + etapa.color + "44", borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:600 }}>{etapa.label}</span>
+            <ContadorDias o={o} />
+            {o.enTransito && <span style={{ fontSize:10, background:BRAND.blue + "12", color:BRAND.blue, border:"0.5px solid " + BRAND.blue + "44", borderRadius:5, padding:"2px 7px", fontWeight:600 }}>🚗 Tránsito{dT !== null ? ` · ${dT} d` : ""}</span>}
+          </div>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, marginLeft:"auto" }}>
+          <ChipEntrega o={o} hoyStr={hoyStr} />
+          {rep > 0 && <span style={{ fontSize:11, color:"#B45309", fontWeight:600 }}>Reprogramada {rep === 1 ? "1 vez" : rep + " veces"}</span>}
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
+        {puedeEditar && <button type="button" onClick={abierto ? onCerrar : onAbrir} style={{ ...boton, border:"1px solid " + BRAND.accent + "66", background:abierto ? BRAND.accent : BRAND.accent + "10", color:abierto ? "#fff" : BRAND.accent }}>📅 {fechaEntregaOrden(o) ? "Cambiar fecha" : "Poner fecha"}</button>}
+        {tel
+          ? <><a href={enlaceWA(e.estado === "vencida" ? "actualizacion" : "entrega")} target="_blank" rel="noopener noreferrer" style={{ ...boton, background:"#E8F8EE", color:"#0B7A3B", border:"1px solid #A7E3BE" }}>WhatsApp</a>
+              <a href={"tel:+" + tel} style={{ ...boton, background:BRAND.bg, color:BRAND.text, border:"1px solid " + BRAND.border }}>Llamar</a></>
+          : <span style={{ ...boton, cursor:"default", color:BRAND.muted, background:"transparent", border:"1px dashed " + BRAND.border }} title="Agrega el teléfono del cliente en la orden">Sin teléfono válido</span>}
+        <button type="button" onClick={() => onAbrirOrden(o)} style={{ ...boton, background:"transparent", color:BRAND.muted, border:"1px solid " + BRAND.border }}>Ver orden</button>
+      </div>
+      {abierto && <EditorEntrega o={o} hoyStr={hoyStr} onCancelar={onCerrar} onGuardar={onGuardar} />}
+      {aviso && !abierto && (
+        <div role="status" style={{ marginTop:10, background:"#ECFDF5", border:"1px solid #A7F3D0", borderRadius:10, padding:"8px 12px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <span style={{ fontSize:12, color:"#047857", fontWeight:600, flex:"1 1 200px" }}>Fecha guardada. La pantalla del taller la mostrará en menos de un minuto.</span>
+          {tel && aviso.tipo && <a href={enlaceWA(aviso.tipo)} target="_blank" rel="noopener noreferrer" onClick={onCerrarAviso} style={{ ...boton, background:"#0B7A3B", color:"#fff", border:"none" }}>Avisar a {primerNombre(o.cliente) || "el cliente"} por WhatsApp</a>}
+          <button type="button" onClick={onCerrarAviso} style={{ ...boton, background:"transparent", border:"none", color:"#047857" }}>Listo</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SeccionPizarron({ ordenes, usuario, desktop, puedeEditar, onFecha, onAbrirOrden, filtroInicial }) {
+  const S = mkS();
+  const hoyStr = hoyLocal();
+  const [filtro, setFiltro] = useState(filtroInicial || "todas");
+  const [orden, setOrden] = useState("antiguas");
+  const [abierto, setAbierto] = useState(null);
+  const [aviso, setAviso] = useState(null);
+  const [ayuda, setAyuda] = useState(false);
+  const res = resumenPizarron(ordenes, hoyStr);
+  const todas = ordenarPorAlta(ordenes, "antiguas");
+  const filtradas = filtro === "todas" ? todas : todas.filter(o => estadoEntrega(o, hoyStr) === filtro);
+  const lista = orden === "entrega"
+    ? filtradas.slice().sort((a, b) => { const fa = fechaEntregaOrden(a), fb = fechaEntregaOrden(b); return (!fa) - (!fb) || fa.localeCompare(fb) || fechaAlta(a).localeCompare(fechaAlta(b)); })
+    : filtradas;
+  const urgentes = alertasPizarron(ordenes, hoyStr).filter(a => a.tipo === "vencida" || a.tipo === "hoy");
+  const esAdmin = puedePerm(usuario, "todo");
+  const abrirPantalla = () => { const w = window.open("/?pizarron", "_blank", "noopener"); if (w) w.opener = null; };
+  const guardar = o => (fecha, motivo, tipo) => { onFecha(o.id, fecha, motivo); setAbierto(null); setAviso(fecha ? { id: o.id, tipo } : null); };
+  const n = k => k === "todas" ? res.total : res[k];
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12, maxWidth:980 }}>
+      <div style={S.card}>
+        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
+          <div style={{ flex:"1 1 320px", minWidth:0 }}>
+            <div style={{ fontSize:15, fontWeight:800, marginBottom:4 }}>📺 Pizarrón del taller</div>
+            <div style={{ fontSize:12, color:BRAND.muted, lineHeight:1.55 }}>Todas las unidades activas, de la más antigua a la más reciente. Aquí pones o cambias la fecha de entrega; la pantalla del taller se actualiza sola en menos de un minuto.</div>
+          </div>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            <button type="button" style={S.btn} onClick={abrirPantalla}>Abrir modo pantalla</button>
+            <button type="button" aria-expanded={ayuda} style={{ ...S.btnSm(), padding:"0.5rem 0.9rem", fontSize:12 }} onClick={() => setAyuda(a => !a)}>{ayuda ? "Ocultar instrucciones" : "Cómo dejarlo en la TV"}</button>
+          </div>
+        </div>
+        {ayuda && (
+          <div style={{ marginTop:12, background:BRAND.bg, borderRadius:10, padding:"0.85rem 1rem", fontSize:12, color:BRAND.text, lineHeight:1.6 }}>
+            <div style={{ fontWeight:700, marginBottom:6 }}>Una cuenta de solo lectura para la pantalla</div>
+            <ol style={{ margin:0, paddingLeft:18 }}>
+              <li>En la TV (o la computadora conectada a ella) abre <b>app.repairx.com.mx</b>, elige «Unirme a un taller» y usa el código <b style={{ color:BRAND.accent, fontFamily:"monospace" }}>{usuario.taller || "de tu taller"}</b>.</li>
+              <li>Regístrala con un correo propio para la pantalla. Puedes usar tu mismo correo con «+pantalla» (por ejemplo, <i>tucorreo+pantalla@gmail.com</i>): Gmail y Outlook lo entregan en tu bandeja. Confirma el correo.</li>
+              <li>{esAdmin ? "Aquí, en Equipo, aprueba la solicitud con el rol «Pantalla (TV)»." : "Pide al administrador que, en Equipo, apruebe la solicitud con el rol «Pantalla (TV)»."}</li>
+              <li>La TV abrirá el pizarrón sola. Pulsa «Pantalla completa» (o la tecla F).</li>
+            </ol>
+            <div style={{ marginTop:8, color:BRAND.muted }}>Esa cuenta no puede modificar nada, no ve teléfonos, costos, fotos ni documentos, y su sesión no se cierra por inactividad. En la pantalla los clientes aparecen como «Kevin S.». Para quitarle el acceso, en Equipo elige «Quitar acceso».</div>
+          </div>
+        )}
+      </div>
+
+      {urgentes.length > 0 && (
+        <div role="alert" style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10, padding:"10px 14px" }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#B91C1C", marginBottom:4 }}>
+            ⚠ {[res.vencida ? `${res.vencida} entrega${res.vencida === 1 ? "" : "s"} vencida${res.vencida === 1 ? "" : "s"}` : "", res.hoy ? `${res.hoy} para hoy` : ""].filter(Boolean).join(" y ")}
+          </div>
+          <div style={{ fontSize:12, color:"#7F1D1D", lineHeight:1.5 }}>{res.vencida ? "Ponles una fecha nueva con su motivo y avisa al cliente. " : ""}{urgentes.slice(0, 4).map(a => `${a.o.placa || a.o.id} (${a.o.vehiculo || "unidad"})`).join(", ")}{urgentes.length > 4 ? ` y ${urgentes.length - 4} más` : ""}.</div>
+        </div>
+      )}
+
+      <div style={{ display:"grid", gridTemplateColumns:desktop ? "repeat(5, 1fr)" : "repeat(2, 1fr)", gap:8 }}>
+        {["vencida", "hoy", "manana", "semana", "sin"].map(k => { const info = ESTADOS_ENTREGA[k], sel = filtro === k; return (
+          <button key={k} type="button" aria-pressed={sel} onClick={() => setFiltro(sel ? "todas" : k)}
+            style={{ ...S.metric, cursor:"pointer", padding:"0.75rem", textAlign:"left", border:"1px solid " + (sel ? info.texto : BRAND.border), background:sel ? info.fondo : BRAND.card, boxShadow:sel ? "none" : S.metric.boxShadow }}>
+            <div style={{ fontSize:22, fontWeight:800, color:res[k] ? info.texto : BRAND.dimmed, lineHeight:1.1 }}>{res[k]}</div>
+            <div style={{ fontSize:11, color:BRAND.muted, marginTop:2 }}>{info.label}</div>
+          </button>); })}
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+        <div role="group" aria-label="Filtrar por entrega" style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+          {FILTROS_PIZARRON.map(f => { const sel = filtro === f.k; return (
+            <button key={f.k} type="button" aria-pressed={sel} onClick={() => setFiltro(f.k)}
+              style={{ border:"1px solid " + (sel ? BRAND.accent : BRAND.border), background:sel ? BRAND.accent + "12" : BRAND.card, color:sel ? BRAND.accent : BRAND.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer" }}>
+              {f.l} ({n(f.k)})</button>); })}
+        </div>
+        <div role="group" aria-label="Ordenar" style={{ display:"inline-flex", background:BRAND.bg, border:"1px solid " + BRAND.border, borderRadius:9, padding:2, gap:2 }}>
+          {[{ k:"antiguas", l:"Más antiguas primero" }, { k:"entrega", l:"Por fecha de entrega" }].map(op => { const sel = orden === op.k; return (
+            <button key={op.k} type="button" aria-pressed={sel} onClick={() => setOrden(op.k)}
+              style={{ border:"none", borderRadius:7, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:"pointer", background:sel ? "#fff" : "transparent", color:sel ? BRAND.text : BRAND.muted, boxShadow:sel ? "0 1px 2px rgba(16,24,40,0.12)" : "none" }}>{op.l}</button>); })}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {lista.map(o => (
+          <FilaPizarron key={o.id} o={o} hoyStr={hoyStr} puedeEditar={puedeEditar} taller={usuario.tallerNombre || ""}
+            abierto={abierto === o.id} onAbrir={() => { setAbierto(o.id); setAviso(null); }} onCerrar={() => setAbierto(null)}
+            onGuardar={guardar(o)} onAbrirOrden={onAbrirOrden}
+            aviso={aviso && aviso.id === o.id ? aviso : null} onCerrarAviso={() => setAviso(null)} />
+        ))}
+        {lista.length === 0 && (
+          <div style={{ ...S.card, textAlign:"center", color:BRAND.muted, fontSize:13, padding:"2rem 1rem" }}>
+            {ordenes.length === 0 ? "No hay órdenes activas. Las unidades aparecerán aquí en cuanto registres una orden." : "Ninguna unidad coincide con este filtro."}
+            {filtro !== "todas" && <div style={{ marginTop:10 }}><button type="button" style={{ ...S.btnSm(), padding:"6px 12px", fontSize:12 }} onClick={() => setFiltro("todas")}>Ver todas</button></div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario , onRenombrado}) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
@@ -2242,7 +3357,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}>
               <div style={{fontSize:11,color:BRAND.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Vehículo</div>
               <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>{o.vehiculo}</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px"}}>{[{l:"Placa",v:o.placa},{l:"Color",v:o.color},{l:"Técnico",v:o.tecnico},{l:"Servicio",v:o.servicio},{l:"Ingreso",v:o.fecha},{l:"Entrega",v:o.entrega},{l:"Llegó",v:o.llegada==="grua"?"🚛 En grúa":o.llegada==="circulando"?"🚗 Circulando":""}].map(({l,v})=><div key={l}><div style={{fontSize:10,color:BRAND.muted}}>{l}</div><div style={{fontSize:12,fontWeight:500}}>{v||"—"}</div></div>)}</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px"}}>{[{l:"Placa",v:o.placa},{l:"Color",v:o.color},{l:"Técnico",v:o.tecnico},{l:"Servicio",v:o.servicio},{l:"Ingreso",v:o.fecha},{l:"Entrega",v:fechaEntregaOrden(o)},{l:"Llegó",v:o.llegada==="grua"?"🚛 En grúa":o.llegada==="circulando"?"🚗 Circulando":""}].map(({l,v})=><div key={l}><div style={{fontSize:10,color:BRAND.muted}}>{l}</div><div style={{fontSize:12,fontWeight:500}}>{v||"—"}</div></div>)}</div>
               {o.serie&&<div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid "+BRAND.border}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:2}}>No. de Serie (VIN)</div><div style={{fontSize:11,fontFamily:"monospace",letterSpacing:1,color:BRAND.accent}}>{o.serie}</div></div>}
               {o.siniestro&&<div style={{marginTop:8}}><div style={{fontSize:10,color:BRAND.muted,marginBottom:2}}>No. de Siniestro</div><div style={{fontSize:12,color:BRAND.blue,fontWeight:600}}>{o.siniestro}</div></div>}
               {o.notas&&<div style={{marginTop:8,background:BRAND.card2,borderRadius:7,padding:"7px 10px",fontSize:12,color:BRAND.muted,fontStyle:"italic"}}>{o.notas}</div>}
@@ -2283,7 +3398,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             </div>
           </div>
         )}
-        {tabDetalle==="ficha"&&<FichaDetalle o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} />}
+        {tabDetalle==="ficha"&&<FichaDetalle o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} usuario={usuario} />}
         {tabDetalle==="novedades"&&<Novedades orden={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} />}
         {tabDetalle==="refacciones"&&<ChecklistRefacciones o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} puedeEdit={puedeEdit} usuario={usuario} S={S} />}
         {tabDetalle==="bitacora"&&<div><div style={{fontSize:12,color:BRAND.muted,marginBottom:12}}>Historial de cambios</div>{(o.bitacora||[]).slice().reverse().map((b,i)=><div key={i} style={{display:"flex",gap:12,marginBottom:14,alignItems:"flex-start"}}><div style={{width:8,height:8,borderRadius:"50%",background:BRAND.accent,marginTop:5,flexShrink:0}} /><div><div style={{fontSize:13,fontWeight:500}}>{b.accion}</div><div style={{fontSize:11,color:BRAND.muted}}>{b.usuario} - {b.fecha}</div></div></div>)}</div>}
@@ -2319,6 +3434,8 @@ export default function App() {
   const usuarioRef = useRef(null); usuarioRef.current = usuario;
   const iniciandoRef = useRef(true); iniciandoRef.current = iniciando;
   const arrancarRef = useRef(null);
+  // ?pizarron en la dirección: esta pestaña muestra solo el pizarrón (para la TV del taller)
+  const [modoPizarron, setModoPizarron] = useState(() => { try { return new URLSearchParams(window.location.search).has("pizarron"); } catch (_) { return false; } });
 
   // Cambia solo las llaves de la sesión; lo demás del usuario sigue igual
   const aplicarLlaves = n => setUsuario(prev => prev && prev.id === n.id
@@ -2351,7 +3468,7 @@ export default function App() {
         const u = leerSesion();
         if (!u) { setSinConexion(false); setIniciando(false); return; }
         if (u.modoDemo || !u.refreshToken) { setUsuario(u); setIniciando(false); return; }
-        if (inactivoDemasiado()) {
+        if (u.rol !== "pantalla" && inactivoDemasiado()) {      // las cuentas de pantalla no se cierran por inactividad
           if (sesionVigente(u, 0)) supaAuth.signOut(u.token, "local");
           borrarSesion();
           setAvisoLogin({ tipo:"info", texto: MENSAJES_CIERRE.inactividad });
@@ -2374,6 +3491,12 @@ export default function App() {
         }
         try {
           const perfil = await Promise.race([supaApi.getPerfil(act.token, act.id), new Promise(res => setTimeout(() => res(null), 8000))]);
+          if (perfil && act.rol === "pantalla" && ROLES_EQUIPO.includes(perfil.rol)) {
+            // La cuenta de la TV pasó a ser del equipo: no se abre la app completa en una pantalla que ve el público
+            supaAuth.signOut(act.token, "local"); borrarSesion();
+            setAvisoLogin({ tipo:"info", texto: MENSAJES_CIERRE.rol }); setSinConexion(false); setIniciando(false);
+            return;
+          }
           if (perfil) act = { ...act, rol: perfil.rol || act.rol, taller: perfil.taller || act.taller, tallerNombre: perfil.taller_nombre || act.tallerNombre };
         } catch (_) {}
         if (!vivo) return;
@@ -2430,13 +3553,15 @@ export default function App() {
   // Renueva la sesión antes de que venza y la cierra tras 12 horas sin uso. Revisa cada 30 s,
   // al volver a la pestaña o despertar la computadora, y en cuanto regresa el internet.
   const idSesion = usuario && !usuario.modoDemo && usuario.refreshToken ? usuario.id : "";
+  const esPantallaSesion = !!usuario && usuario.rol === "pantalla";
+  const soloPizarron = !!usuario && (esPantallaSesion || modoPizarron);   // esta pestaña solo muestra el pizarrón
   useEffect(() => {
     if (!idSesion) return;
     let vivo = true, enCurso = false, fallas = 0, reintento = null;
     const revisar = async () => {
       if (!vivo || enCurso) return;
-      if (inactivoDemasiado()) { cerrarSesionLocal("inactividad"); return; }
       const u = usuarioRef.current;
+      if (!(u && u.rol === "pantalla") && inactivoDemasiado()) { cerrarSesionLocal("inactividad"); return; }
       if (!u || u.modoDemo || sesionVigente(u)) return;
       enCurso = true;
       let r;
@@ -2466,7 +3591,7 @@ export default function App() {
   // Cualquier clic, toque o tecla cuenta como uso, en cualquier pestaña. Si ya pasaron 12 horas
   // sin uso, ese primer toque cierra la sesión en lugar de extenderla.
   useEffect(() => {
-    if (!idSesion) return;
+    if (!idSesion || esPantallaSesion) return;      // la TV no tiene quién la use: no cuenta actividad
     let ultima = 0;
     const alUsar = () => {
       const ahora = Date.now();
@@ -2477,7 +3602,7 @@ export default function App() {
     const eventos = ["pointerdown", "keydown", "touchstart", "wheel"];
     eventos.forEach(ev => window.addEventListener(ev, alUsar, { capture: true, passive: true }));
     return () => eventos.forEach(ev => window.removeEventListener(ev, alUsar, { capture: true }));
-  }, [idSesion]);
+  }, [idSesion, esPantallaSesion]);
 
   const iniciarSesion = u => { if (!u.modoDemo) marcarActividad(); setAvisoLogin(null); setUsuario(u); };
   const cerrarSesion = () => cerrarSesionLocal("salida");
@@ -2494,6 +3619,24 @@ export default function App() {
     cerrarSesionLocal("todos", false);
   };
 
+  // Vuelve a leer el perfil (la TV lo pide si el servidor le niega el pizarrón, y cada 10 minutos).
+  // Si una cuenta de pantalla pasó a ser del equipo, se cierra la sesión en lugar de abrir la app completa.
+  const revisarPerfil = async () => {
+    const u = usuarioRef.current;
+    if (!u || u.modoDemo) return;
+    try {
+      const perfil = await supaApi.getPerfil(u.token, u.id);
+      if (!perfil || !perfil.rol || !usuarioRef.current || usuarioRef.current.id !== u.id) return;
+      if (u.rol === "pantalla" && ROLES_EQUIPO.includes(perfil.rol)) { cerrarSesionLocal("rol"); return; }
+      if (perfil.rol !== u.rol || (perfil.taller && perfil.taller !== u.taller))
+        setUsuario(prev => prev && prev.id === u.id ? { ...prev, rol: perfil.rol, taller: perfil.taller || prev.taller, tallerNombre: perfil.taller_nombre || prev.tallerNombre } : prev);
+    } catch (_) {}
+  };
+  const salirDelPizarron = () => {
+    try { const url = new URL(window.location.href); url.searchParams.delete("pizarron"); window.history.replaceState(null, "", url.pathname + url.search + url.hash); } catch (_) {}
+    setModoPizarron(false);
+  };
+
   const [vista,setVista]=useState("dashboard");
   const [subVista,setSubVista]=useState("activas");
   const [ordenes,setOrdenes]=useState(MODO_DEMO?ORDENES_INIT:[]);
@@ -2508,6 +3651,7 @@ export default function App() {
   const [gBusqueda,setGBusqueda]=useState("");
   const [pagina,setPagina]=useState(1);
   const [refFiltro,setRefFiltro]=useState({ estado:"pendientes", n:0 });   // filtro con el que se abre la sección Refacciones
+  const [pizFiltro,setPizFiltro]=useState({ estado:"todas", n:0 });        // filtro con el que se abre la sección Pizarrón
   const [ordenLista,setOrdenLista]=useState(()=>{ try { return localStorage.getItem("repairx_orden_lista")==="antiguas"?"antiguas":"recientes"; } catch(_){ return "recientes"; } });
   const [fotoAmpliada,setFotoAmpliada]=useState(null);
   const [docTipo,setDocTipo]=useState("inventario");
@@ -2533,10 +3677,10 @@ export default function App() {
   useEffect(()=>{ setPagina(1); }, [busqueda, filtroEstado, subVista]);
 
   useEffect(() => {
-    if (!usuario || usuario.modoDemo || !puedePerm(usuario,"todo")) return;
+    if (!usuario || usuario.modoDemo || !puedePerm(usuario,"todo") || soloPizarron) return;
     if (vista!=="equipo" && vista!=="dashboard") return;
     supaApi.getUsuariosTaller(usuario.token, usuario.taller).then(d => { if(Array.isArray(d)) setUsuarios(d); }).catch(()=>{});
-  }, [vista, usuario]);
+  }, [vista, usuario, soloPizarron]);
 
   // ─── Sincronización con el servidor (edición simultánea sin pérdidas) ───────
   const syncRef = useRef({});      // id → { base: la orden tal como está en el servidor, version }
@@ -2623,6 +3767,7 @@ export default function App() {
   };
 
   const programarGuardado = o => {
+    if (usuarioRef.current && usuarioRef.current.rol === "pantalla") return;   // la pantalla nunca guarda
     const js = estable(filaLocalDe(o));
     if (enviadoRef.current[o.id] === js) return;
     enviadoRef.current[o.id] = js;
@@ -2661,7 +3806,8 @@ export default function App() {
   };
 
   // Solo recarga todo si cambia la cuenta, el taller o el rol (no en cada renovación del token)
-  const claveSesion = usuario && !usuario.modoDemo ? [usuario.id, usuario.taller, usuario.rol].join("|") : "";
+  // En modo pizarrón no se cargan las órdenes completas: la TV pide a la base solo lo que muestra
+  const claveSesion = usuario && !usuario.modoDemo && !soloPizarron ? [usuario.id, usuario.taller, usuario.rol].join("|") : "";
 
   useEffect(() => {
     if (!claveSesion) { cargadoRef.current = false; return; }
@@ -2753,8 +3899,26 @@ export default function App() {
   if (!usuario) return <LoginScreen key={avisoLogin ? avisoLogin.texto : "login"} onLogin={iniciarSesion} aviso={avisoLogin} />;
   if (!usuario.modoDemo && (usuario.rol === "pendiente" || usuario.rol === "rechazado"))
     return <PantallaPendiente usuario={usuario} onActualizar={setUsuario} onLogout={cerrarSesion} />;
+  // La TV del taller: las cuentas de pantalla solo ven el pizarrón; el equipo lo abre con ?pizarron
+  if (soloPizarron)
+    return <PizarronPantalla usuario={usuario} esPantalla={esPantallaSesion} ordenesDemo={usuario.modoDemo ? ordenes : null}
+      onSalir={salirDelPizarron} onCerrarSesion={cerrarSesion} onRevisarPerfil={revisarPerfil} />;
 
   const pendientesEquipo = puedePerm(usuario,"todo") ? usuarios.filter(u=>u.rol==="pendiente").length : 0;
+
+  // ─── Pizarrón: fechas de entrega de las órdenes activas ─────────────────────
+  const resPiz = resumenPizarron(ordenes, hoyLocal());
+  const irAPizarron = filtro => { setPizFiltro({ estado: filtro || "todas", n: Date.now() }); setVista("pizarron"); setOrdenSel(null); setGBusqueda(""); };
+  const cambiarFechaEntrega = (id, fecha, motivo) => {
+    const fn = o => conFechaEntrega(o, fecha, { motivo, usuario });
+    setOrdenes(prev => prev.map(o => o.id === id ? fn(o) : o));
+    setOrdenSel(prev => prev && prev.id === id ? fn(prev) : prev);
+  };
+  const abrirOrdenInfo = o => { setOrdenSel(o); setTabDetalle("info"); setVista("ordenes"); setSubVista("activas"); };
+  const renderPizarron = () => (
+    <SeccionPizarron key={pizFiltro.n} filtroInicial={pizFiltro.estado} ordenes={ordenes} usuario={usuario} desktop={desktop}
+      puedeEditar={puedePerm(usuario, "editar_ordenes") || puedePerm(usuario, "ficha")} onFecha={cambiarFechaEntrega} onAbrirOrden={abrirOrdenInfo} />
+  );
 
   // ─── Refacciones de las órdenes activas ─────────────────────────────────────
   const resRef = resumenRefacciones(ordenes);
@@ -2932,9 +4096,11 @@ export default function App() {
     const { transito, ...datosForm } = form;
     const bitacoraInicial = [{ accion: "Orden creada", usuario: usuario.nombre, fecha: hoy() }];
     if (transito) bitacoraInicial.push({ accion: "Unidad enviada a tránsito en espera de piezas", usuario: usuario.nombre, fecha: hoy() });
+    if (form.entrega) bitacoraInicial.push({ accion: "Fecha de entrega: " + fechaCorta(form.entrega), usuario: usuario.nombre, fecha: hoy() });
     const n = {
       ...datosForm,
       ...EXTRA(),
+      fechaPromesaEntrega: form.entrega || "",   // la misma fecha que verá el pizarrón
       llegada: form.llegada || "",
       enTransito: !!transito,
       fechaTransito: transito ? hoyLocal() : "",
@@ -3014,6 +4180,14 @@ export default function App() {
           <span style={{fontSize:13,color:"hsl(0, 75%, 40%)",fontWeight:700}}>⚠ {n} {n===1?"orden lleva":"órdenes llevan"} más de {DIAS_ALERTA} días desde su alta</span>
           <span style={{fontSize:12,color:"hsl(0, 75%, 40%)",fontWeight:600,flexShrink:0}}>Ver →</span>
         </div>); })()}
+      {(resPiz.vencida + resPiz.hoy + resPiz.manana) > 0 && (()=>{ const rojo = resPiz.vencida > 0; const c = rojo ? { fondo:"#FEF2F2", borde:"#FCA5A5", texto:"#B91C1C" } : { fondo:"#FFFBEB", borde:"#FCD34D", texto:"#92400E" };
+        const ir = () => irAPizarron(resPiz.vencida ? "vencida" : resPiz.hoy ? "hoy" : "manana");
+        const partes = [resPiz.vencida ? `${resPiz.vencida} vencida${resPiz.vencida===1?"":"s"}` : "", resPiz.hoy ? `${resPiz.hoy} para hoy` : "", resPiz.manana ? `${resPiz.manana} para mañana` : ""].filter(Boolean);
+        return (
+        <div role="button" tabIndex={0} onClick={ir} onKeyDown={e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); ir(); } }} style={{background:c.fondo,border:"1px solid "+c.borde,borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}>
+          <span style={{fontSize:13,color:c.texto,fontWeight:700}}>📅 Entregas: {partes.join(", ")}</span>
+          <span style={{fontSize:12,color:c.texto,fontWeight:600,flexShrink:0}}>Ver pizarrón →</span>
+        </div>); })()}
       <ResumenRefaccionesDashboard ordenes={ordenes} desktop={desktop} onIr={irARefacciones} />
       <div style={S.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
@@ -3087,7 +4261,7 @@ export default function App() {
     if(form.telefono.trim()&&form.telefono.replace(/\D/g,"").length<10) err.telefono="Al menos 10 dígitos";
     if(form.serie.trim()&&form.serie.trim().length!==17) err.serie="El VIN debe tener 17 caracteres";
     if(form.costo!==""&&(isNaN(parseFloat(form.costo))||parseFloat(form.costo)<0)) err.costo="Debe ser un número mayor o igual a 0";
-    if(form.entrega&&form.entrega<hoy()) err.entrega="No puede ser anterior a hoy";
+    if(form.entrega&&form.entrega<hoyLocal()) err.entrega="No puede ser anterior a hoy";
     const hayErrores=Object.keys(err).length>0;
     const be=f=>err[f]?{border:"0.5px solid #EF4444"}:{};
     const Er=({f})=>err[f]?<div style={{fontSize:10,color:"#EF4444",marginTop:3}}>{err[f]}</div>:null;
@@ -3132,7 +4306,7 @@ export default function App() {
           <div style={{gridColumn:"1/-1"}}><label style={S.label}>No. de Siniestro (si aplica)</label><input style={S.input} placeholder="Ej. SIN-2026-00123" value={form.siniestro} onChange={e=>setForm({...form,siniestro:e.target.value})} /></div>
           <div><label style={S.label}>Color</label><input style={S.input} placeholder="Ej. Blanco perla" value={form.color} onChange={e=>setForm({...form,color:e.target.value})} /></div>
           {/* CAMBIO 7: "Fecha Promesa de Entrega" en lugar de "Fecha de Entrega" */}
-          <div><label style={S.label}>Fecha Promesa de Entrega</label><input type="date" min={hoy()} style={{...S.input,...be("entrega")}} value={form.entrega} onChange={e=>setForm({...form,entrega:e.target.value})} /><Er f="entrega" /></div>
+          <div><label style={S.label}>Fecha Promesa de Entrega</label><input type="date" min={hoyLocal()} style={{...S.input,...be("entrega")}} value={form.entrega} onChange={e=>setForm({...form,entrega:e.target.value})} /><Er f="entrega" /></div>
           {/* CAMBIO 8: Multi-selección de servicios con pills */}
           <div style={{gridColumn:"1/-1"}}>
             <label style={S.label}>Servicio * <span style={{color:BRAND.muted,fontWeight:400}}>(puedes elegir varios)</span></label>
@@ -3187,7 +4361,7 @@ export default function App() {
     const rechazados = lista.filter(u=>u.rol==="rechazado");
     const miembros   = lista.filter(u=>u.rol!=="pendiente"&&u.rol!=="rechazado");
     const avatar = (u, color) => <div style={{width:34,height:34,borderRadius:"50%",background:color+"22",border:"1.5px solid "+color+"44",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color,flexShrink:0}}>{(u.nombre||u.email||"?")[0].toUpperCase()}</div>;
-    const datos = u => <div style={{flex:1,minWidth:140}}><div style={{fontSize:13,fontWeight:600}}>{u.nombre||"(sin nombre)"}{u.id===usuario.id&&<span style={{fontSize:10,color:BRAND.muted,fontWeight:400}}> · tú</span>}</div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div></div>;
+    const datos = u => <div style={{flex:1,minWidth:140}}><div style={{fontSize:13,fontWeight:600}}>{u.nombre||"(sin nombre)"}{u.id===usuario.id&&<span style={{fontSize:10,color:BRAND.muted,fontWeight:400}}> · tú</span>}</div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div>{u.rol==="pantalla"&&<div style={{fontSize:10,color:"#0F766E",marginTop:2}}>📺 Solo ve el pizarrón: sin teléfonos, costos ni fotos</div>}</div>;
     const aprobar  = u => cambiarRol(u.id, rolAprobar[u.id] || "asesor");
     const rechazar = u => { if (!confirm(`¿Rechazar la solicitud de ${u.nombre || u.email}? No podrá ver nada del taller.`)) return; cambiarRol(u.id, "rechazado"); };
     return (
@@ -3211,7 +4385,7 @@ export default function App() {
                 <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:BRAND.bg,borderRadius:10,padding:"0.6rem 0.85rem"}}>
                   {avatar(u, BRAND.blue)}{datos(u)}
                   <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                    <select value={rolAprobar[u.id]||"asesor"} onChange={e=>setRolAprobar(p=>({...p,[u.id]:e.target.value}))} title="Rol con el que entrará" style={{...S.select,width:130}}>
+                    <select value={rolAprobar[u.id]||"asesor"} onChange={e=>setRolAprobar(p=>({...p,[u.id]:e.target.value}))} title="Rol con el que entrará" style={{...S.select,width:150}}>
                       {Object.keys(ROLES).map(k=><option key={k} value={k}>{ROLES[k].label}</option>)}
                     </select>
                     <button style={{...S.btnGreen,padding:"0.45rem 0.9rem"}} onClick={()=>aprobar(u)}>Aprobar</button>
@@ -3257,7 +4431,7 @@ export default function App() {
     );
   };
 
-  const titulos={dashboard:"",ordenes:"Órdenes de Trabajo",refacciones:"Refacciones",historial:"Historial",nueva:"Nueva Orden",terminadas:"Siniestros Terminados",exportar:"Exportar a Excel",equipo:"Equipo"};
+  const titulos={dashboard:"",ordenes:"Órdenes de Trabajo",pizarron:"Pizarrón del taller",refacciones:"Refacciones",historial:"Historial",nueva:"Nueva Orden",terminadas:"Siniestros Terminados",exportar:"Exportar a Excel",equipo:"Equipo"};
 
   return (
     <div style={{fontFamily:FUENTE_APP,minHeight:"100vh",width:"100%",background:BRAND.bg,color:BRAND.text}}>
@@ -3267,7 +4441,7 @@ export default function App() {
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
       {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><ImagenArchivo item={fotoAmpliada} token={usuario?.token} alt={fotoAmpliada.nombre} style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
-      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} refPend={resRef.pendientes} refAtrasadas={resRef.atrasadas} />
+      <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} refPend={resRef.pendientes} refAtrasadas={resRef.atrasadas} pizAlertas={resPiz.vencida + resPiz.hoy} />
       <div style={{marginLeft:desktop?240:0,display:"flex",flexDirection:"column",minHeight:"100vh",minWidth:0}}>
         <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
           <div style={{padding:desktop?"0 1rem":"0 1rem 0 58px",minHeight:48,borderBottom:"0.5px solid "+BRAND.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:BRAND.card}}>
@@ -3297,6 +4471,7 @@ export default function App() {
                 {vista==="nueva"      && renderNuevaOrden()}
                 {vista==="equipo"     && puedePerm(usuario,"todo") && renderEquipo()}
                 {vista==="refacciones" && renderRefacciones()}
+                {vista==="pizarron"   && renderPizarron()}
                 {vista==="exportar"   && <ExportarExcel ordenes={[...ordenes,...ordenesCobro,...ordenesCobradas,...ordenesTerminadas,...historial]} S={S} />}
               </>}
         </div>
