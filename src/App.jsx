@@ -2310,6 +2310,11 @@ const conFechaEntrega = (o, fecha, { motivo = "", usuario = null, antes = fechaE
   return n;
 };
 
+// El vehículo se captura como «Marca, Modelo, Año»: en el pizarrón se muestra sin comas
+// ("Chevrolet, Aveo, 2025" → "Chevrolet Aveo 2025") y, donde no cabe, sin el año.
+const textoVehiculo = v => String(v || "").replace(/\s*,\s*/g, " ").replace(/\s+/g, " ").trim();
+const sinAnio = v => textoVehiculo(v).replace(/\s+(19|20)\d{2}$/, "");
+
 // ─── Contacto con el cliente ────────────────────────────────────────────────────
 // WhatsApp: 10 dígitos de México → 52 + número (wa.me ya no usa el "1" de los celulares)
 const numeroWhatsApp = tel => {
@@ -2332,7 +2337,7 @@ const nombreCorto = n => {
 const mensajeCliente = (o, taller, tipo) => {
   const nombre = primerNombre(o.cliente);
   const saludo = `Hola${nombre ? " " + nombre : ""}, te escribimos de ${taller || "tu taller"}.`;
-  const auto = (o.vehiculo || "unidad") + (o.placa ? ` (placas ${o.placa})` : "");
+  const auto = (textoVehiculo(o.vehiculo) || "unidad") + (o.placa ? ` (placas ${o.placa})` : "");
   const f = fechaEntregaOrden(o), d = f ? diasEntre(hoyLocal(), f) : null;
   const cierre = " Cualquier duda, estamos a tus órdenes.";
   if (f && d !== null && d >= 0) {
@@ -2529,6 +2534,7 @@ const CSS_PIZARRON = `
 .pz-cifra span{font-size:calc(var(--u)*1.3);color:var(--texto2);line-height:1.15}
 .pz-cifra.llena{border-left-color:transparent}
 .pz-cifra.llena b,.pz-cifra.llena span{color:var(--tinta)}
+.pz-cifra.llena span{font-weight:600}
 .pz-escenario{position:relative;min-height:0}
 .pz-diapo{position:absolute;top:0;left:0;right:0;bottom:0;display:grid;grid-template-rows:auto minmax(0,1fr);row-gap:calc(var(--u)*0.9);animation:pz-entra .6s ease both}
 @keyframes pz-entra{from{opacity:0}to{opacity:1}}
@@ -2704,13 +2710,12 @@ function PildoraEntrega({ o, hoyStr, chica }) {
   return <span className={"pz-pildora" + (chica ? " chica" : "") + (e.estado === "sin" ? " sin" : "")} style={{ background: e.info.tv }}>{e.corta}</span>;
 }
 
-const sinAnio = v => String(v || "").replace(/\s+(19|20)\d{2}$/, "");
 function AutoTV({ o, recortar = true, corto = false }) {
   const color = colorDeAuto(o.color);
   return (
     <span className="pz-auto">
       {color && <i className="pz-color" style={{ background: color }} aria-hidden="true" />}
-      <span className={recortar ? "pz-recorte" : ""}>{(corto ? sinAnio(o.vehiculo) : o.vehiculo) || "Unidad sin datos"}</span>
+      <span className={recortar ? "pz-recorte" : ""}>{(corto ? sinAnio(o.vehiculo) : textoVehiculo(o.vehiculo)) || "Unidad sin datos"}</span>
     </span>
   );
 }
@@ -2885,7 +2890,7 @@ function PizarronCompacto({ marca, cifras, alertas, unidades, hoyStr, salir }) {
         {alertas.map(a => (
           <div className="pz-c-alerta" key={a.clave}>
             <span className="pz-alerta-etq" style={{ background: TIPOS_ALERTA[a.tipo].tv }}>{TIPOS_ALERTA[a.tipo].label}</span>
-            <span><b>{a.o.placa || a.o.id}</b> {a.o.vehiculo}{a.detalle ? `: ${a.detalle}` : ""}</span>
+            <span><b>{a.o.placa || a.o.id}</b> {textoVehiculo(a.o.vehiculo)}{a.detalle ? `: ${a.detalle}` : ""}</span>
           </div>
         ))}
       </>}
@@ -2894,7 +2899,7 @@ function PizarronCompacto({ marca, cifras, alertas, unidades, hoyStr, salir }) {
       {unidades.map(o => { const d = diasDesdeAlta(o); const color = colorDeAuto(o.color); return (
         <div className="pz-c-tarjeta" key={o.id}>
           <div className="pz-c-fila"><PlacaTV o={o} /><PildoraEntrega o={o} hoyStr={hoyStr} /></div>
-          <div className="pz-c-auto">{color && <i className="pz-color" style={{ background: color }} />}{o.vehiculo || "Unidad sin datos"}</div>
+          <div className="pz-c-auto">{color && <i className="pz-color" style={{ background: color }} />}{textoVehiculo(o.vehiculo) || "Unidad sin datos"}</div>
           <div className="pz-c-sub">{[o.cliente, (ESTADOS.find(e => e.key === o.estado) || ESTADOS[0]).label, d !== null ? `${d} día${d === 1 ? "" : "s"} en taller` : "", o.enTransito ? "en tránsito" : ""].filter(Boolean).join(", ")}</div>
         </div>); })}
       {salir}
@@ -3070,7 +3075,7 @@ function PizarronPantalla({ usuario, esPantalla, ordenesDemo, onSalir, onCerrarS
             ? <div className="pz-alerta" key={alerta.clave} role="status">
                 <span className="pz-alerta-etq" style={{ background: TIPOS_ALERTA[alerta.tipo].tv }}>{TIPOS_ALERTA[alerta.tipo].label}</span>
                 <PlacaTV o={alerta.o} chica />
-                <span className="pz-alerta-auto">{alerta.o.vehiculo || alerta.o.id}</span>
+                <span className="pz-alerta-auto">{textoVehiculo(alerta.o.vehiculo) || alerta.o.id}</span>
                 {alerta.detalle && <span className="pz-alerta-txt">{alerta.detalle}</span>}
                 {alertas.length > 1 && <span className="pz-alerta-n">{(iAlerta % alertas.length) + 1} de {alertas.length}</span>}
               </div>
@@ -3181,7 +3186,7 @@ function FilaPizarron({ o, hoyStr, puedeEditar, abierto, onAbrir, onCerrar, onGu
         <div style={{ flex:"1 1 220px", minWidth:0 }}>
           <div style={{ fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:7, minWidth:0 }}>
             {color && <span aria-hidden="true" style={{ width:11, height:11, borderRadius:"50%", background:color, boxShadow:"0 0 0 1px rgba(16,24,40,.25)", flexShrink:0 }} />}
-            <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{o.vehiculo || "Unidad sin datos"}</span>
+            <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{textoVehiculo(o.vehiculo) || "Unidad sin datos"}</span>
             {o.color && !color && <span style={{ fontSize:11, color:BRAND.muted, fontWeight:500 }}>{o.color}</span>}
           </div>
           <div style={{ fontSize:12, color:BRAND.muted, marginTop:2 }}>{o.cliente || "Sin nombre"}{o.telefono ? <span> · {o.telefono}</span> : null}</div>
@@ -3268,7 +3273,7 @@ function SeccionPizarron({ ordenes, usuario, desktop, puedeEditar, onFecha, onAb
           <div style={{ fontSize:13, fontWeight:700, color:"#B91C1C", marginBottom:4 }}>
             ⚠ {[res.vencida ? `${res.vencida} entrega${res.vencida === 1 ? "" : "s"} vencida${res.vencida === 1 ? "" : "s"}` : "", res.hoy ? `${res.hoy} para hoy` : ""].filter(Boolean).join(" y ")}
           </div>
-          <div style={{ fontSize:12, color:"#7F1D1D", lineHeight:1.5 }}>{res.vencida ? "Ponles una fecha nueva con su motivo y avisa al cliente. " : ""}{urgentes.slice(0, 4).map(a => `${a.o.placa || a.o.id} (${a.o.vehiculo || "unidad"})`).join(", ")}{urgentes.length > 4 ? ` y ${urgentes.length - 4} más` : ""}.</div>
+          <div style={{ fontSize:12, color:"#7F1D1D", lineHeight:1.5 }}>{res.vencida ? "Ponles una fecha nueva con su motivo y avisa al cliente. " : ""}{urgentes.slice(0, 4).map(a => `${a.o.placa || a.o.id} (${textoVehiculo(a.o.vehiculo) || "unidad"})`).join(", ")}{urgentes.length > 4 ? ` y ${urgentes.length - 4} más` : ""}.</div>
         </div>
       )}
 
