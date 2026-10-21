@@ -233,7 +233,10 @@ const supaApi = {
   actualizarOrden: async (token, tallerId, id, version, cambios) => {
     const url = SUPA_URL + "/rest/v1/ordenes?taller_id=eq." + encodeURIComponent(tallerId) + "&id=eq." + encodeURIComponent(id) + "&version=eq." + encodeURIComponent(version) + "&select=version,actualizado_en";
     const r = await fetch(url, { method:"PATCH", headers:{ ...supaHeaders,"Authorization":"Bearer "+token,"Prefer":"return=representation" }, body: JSON.stringify(cambios) });
-    if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} throw new Error("Error "+r.status+": "+(msg||"no se pudo guardar")); }
+    if (!r.ok) { let msg=""; try{ msg=await r.text(); }catch(_){} const e=new Error("Error "+r.status+": "+(msg||"no se pudo guardar"));
+      // 403: la base de datos no le permite ese cambio a este usuario (p. ej. regresar de etapa sin ser administrador)
+      if (r.status===403) { e.codigo="SIN_PERMISO"; try{ const j=JSON.parse(msg); if(j&&/administrador|permiso/i.test(j.message||"")) e.detalle=j.message; }catch(_){} }
+      throw e; }
     const d = await r.json().catch(() => []);
     return Array.isArray(d) && d.length ? d[0] : null;
   },
@@ -865,13 +868,15 @@ const CATS_NOV = [
   {key:"pendiente",   label:"Pendiente",   color:"#EF4444"},
   {key:"general",     label:"General",     color:"#6B7280"},
 ];
-const SUPERVISORES = {"SUP001":"Ana Martinez","SUP002":"Ricardo Lopez"};
 const DIAS_HIST = 30;
 const DIAS_TERM = 365;
 
-const hoy   = () => new Date().toISOString().split("T")[0];
-const dDias = f => Math.max(0, Math.floor((Date.now()-new Date(f).getTime())/86400000));
-const cDias = f => { if(!f)return 0; const d=new Date(f); if(isNaN(d))return 0; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); };
+// Fecha de hoy "AAAA-MM-DD" según el reloj del dispositivo (hora de México). Antes se tomaba la fecha UTC
+// y, desde las 6 p. m., las órdenes, la bitácora y los cierres quedaban con la fecha del día siguiente.
+const hoy   = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+// Días completos desde una fecha "AAAA-MM-DD" hasta hoy (0 si es hoy, futura o no es una fecha)
+const dDias = f => difDias(f, hoy()) || 0;
+const cDias = f => (f ? difDias(f, hoy()) || 0 : 0);
 
 // ─── Contador de días desde el alta ───────────────────────────────────────────
 const DIAS_ALERTA = 20;   // a partir de aquí la orden se marca en rojo
@@ -925,11 +930,9 @@ const PERITO_VALUADOR_URL = "";
 const diasEnTaller = o => {
   const ini = (o && (o.fechaReingreso || o.fechaPrimerIngreso)) || "";
   if (!ini) return 0;
-  const d1 = new Date(ini); if (isNaN(d1)) return 0;
-  const finStr = (o && (o.fechaEntregaReal || fechaEntregaOrden(o))) || "";
-  const d2 = finStr ? new Date(finStr) : new Date();
-  if (isNaN(d2)) return cDias(ini);
-  return Math.max(0, Math.floor((d2.getTime() - d1.getTime()) / 86400000));
+  const fin = (o && (o.fechaEntregaReal || fechaEntregaOrden(o))) || hoy();
+  const d = difDias(ini, fin);
+  return d === null ? cDias(ini) : d;
 };
 
 const EXTRA = () => ({
@@ -1590,8 +1593,18 @@ function FichaDetalle({ o, ordenes, setOrdenes, setOrdenSel, S, usuario }) {
 
 function ExportarExcel({ ordenes, S }) {
   const [taller,setTaller]=useState("Mi Taller"); const [fuente,setFuente]=useState("todas"); const [ok,setOk]=useState(false);
-  const pV=v=>{const p=v.trim().split(" ");const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
-  const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||fechaEntregaOrden(o);if(!b)return"";if(!f)return cDias(b).toString();return Math.max(0,Math.floor((new Date(f)-new Date(b))/86400000)).toString();};
+  // El formulario pide «Marca, Modelo, Año»: con comas, cada parte es un campo; sin comas, se separa por espacios
+  const pV=v=>{
+    const porEspacios=t=>{const p=t.split(/\s+/).filter(Boolean);const a=p.length&&/^\d{4}$/.test(p[p.length-1])?p.pop():"";const m=p.shift()||"";return{marca:m,modelo:p.join(" "),anio:a};};
+    const p=String(v||"").split(",").map(x=>x.trim()).filter(Boolean);
+    if(p.length<2) return porEspacios(p[0]||"");
+    let a="";
+    if(/^(19|20)\d{2}$/.test(p[p.length-1])) a=p.pop();
+    else { const m=/^(.*\S)\s+((?:19|20)\d{2})$/.exec(p[p.length-1]); if(m){ p[p.length-1]=m[1]; a=m[2]; } }
+    if(p.length===1){ const r=porEspacios(p[0]); return{marca:r.marca,modelo:r.modelo,anio:a||r.anio}; }   // «Nissan Versa, 2019»
+    return{marca:p.shift(),modelo:p.join(" "),anio:a};
+  };
+  const diasT=o=>{const b=o.fechaReingreso||o.fechaPrimerIngreso;const f=o.fechaEntregaReal||fechaEntregaOrden(o);if(!b)return"";if(!f)return cDias(b).toString();const d=difDias(b,f);return String(d===null?cDias(b):d);};
   const COLS=[
     {h:"Taller",v:o=>taller},{h:"Marca",v:o=>pV(o.vehiculo).marca},{h:"ModeloVehiculo",v:o=>pV(o.vehiculo).modelo},{h:"Anio",v:o=>pV(o.vehiculo).anio},{h:"Siniestro",v:o=>o.siniestro||""},{h:"CantPiezas",v:o=>{const n=(o.refacciones||[]).reduce((a,r)=>a+cantidadRef(r),0);return n||"";}},{h:"FechaPrimerIngreso",v:o=>o.fechaPrimerIngreso||""},{h:"FechaProgramacion",v:o=>o.fechaProgramacion||""},{h:"FechaReingreso",v:o=>o.fechaReingreso||""},{h:"FechaInicioReparacion",v:o=>o.fechaInicioReparacion||""},{h:"FechaPromesaEntrega",v:o=>fechaEntregaOrden(o)},{h:"FechaEntrega",v:o=>o.fechaEntregaReal||""},{h:"FechaRefaccionesCompletas",v:o=>o.refaccionesCompletas||""},{h:"DiasEnTaller",v:o=>diasT(o)},{h:"PerfilManoObra",v:o=>o.perfilManoObra||""},{h:"PerfilPintura",v:o=>o.perfilPintura||""},{h:"PerfilMecanica",v:o=>o.perfilMecanica||""},{h:"Placas",v:o=>o.placa||""},{h:"Serie",v:o=>o.serie||""},{h:"AnioAtencion",v:o=>o.anioAtencion||""},{h:"MesAtencion",v:o=>o.mesAtencion||""},{h:"DiaAtencion",v:o=>o.diaAtencion||""},{h:"CostoManoObra",v:o=>o.costoManoObra||""},{h:"CostoRefacciones",v:o=>o.costoRefacciones||""},{h:"MontoReparacionInterna",v:o=>o.montoReparacionInterna||""},{h:"MontoTOT",v:o=>o.montoTOT||""},{h:"OrdenId",v:o=>o.id||""},{h:"Cliente",v:o=>o.cliente||""},{h:"Tecnico",v:o=>o.tecnico||""},{h:"Estado",v:o=>o.estado||""},{h:"Deducible",v:o=>o.deducible||""},{h:"ClienteEspecial",v:o=>o.clienteEspecial?"SI":"NO"},{h:"TipoClienteEspecial",v:o=>o.tipoClienteEspecial||""},{h:"Ubicacion",v:o=>o.enTransito?"Transito":"Piso"},{h:"Llegada",v:o=>o.llegada==="grua"?"Grua":o.llegada==="circulando"?"Circulando":""},{h:"FechaTransito",v:o=>o.fechaTransito||""},
   ];
@@ -3369,7 +3382,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
             </div>
             <div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem"}}><div style={{fontSize:11,color:BRAND.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Progreso</div>{ESTADOS.map((es,i)=><div key={es.key} style={{display:"flex",alignItems:"center",gap:10,padding:"5px 0",borderBottom:i<ESTADOS.length-1?"0.5px solid "+BRAND.border+"33":"none"}}><div style={{width:18,height:18,borderRadius:"50%",background:i<idx?BRAND.accent:i===idx?BRAND.accent+"22":BRAND.dimmed,border:i===idx?"1.5px solid "+BRAND.accent:"none",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:i<idx?"#fff":i===idx?BRAND.accent:BRAND.muted,fontWeight:700,flexShrink:0}}>{i<idx?"✓":i+1}</div><span style={{fontSize:12,color:i===idx?BRAND.accent:i<idx?BRAND.text:BRAND.muted,fontWeight:i===idx?700:400}}>{es.label}</span></div>)}</div>
             {o.costo>0&&<div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:12,color:BRAND.muted}}>Costo estimado</span><span style={{fontSize:17,fontWeight:800,color:BRAND.green}}>${o.costo.toLocaleString("es-MX")}</span></div>}
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{puedeEdit&&idx>0&&<button style={{flex:1,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalRetroceder(o)}>Retroceder (supervisor)</button>}{puedeAdmin&&<button style={{flex:1,background:"#7F1D1D22",color:"#fca5a5",border:"0.5px solid #991b1b33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalCerrar(o)}>Cerrar orden</button>}</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{puedeAdmin&&idx>0&&<button style={{flex:1,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalRetroceder(o)}>Regresar etapa</button>}{!puedeAdmin&&puedeEdit&&idx>0&&<div style={{flex:"1 1 100%",fontSize:11,color:BRAND.muted,textAlign:"center",padding:"2px 0"}}>Solo un administrador puede regresar una orden a la etapa anterior.</div>}{puedeAdmin&&<button style={{flex:1,background:"#7F1D1D22",color:"#fca5a5",border:"0.5px solid #991b1b33",borderRadius:8,padding:"9px 8px",cursor:"pointer",fontSize:12,fontWeight:500}} onClick={()=>setModalCerrar(o)}>Cerrar orden</button>}</div>
             {puedeEdit&&<button style={{width:"100%",background:BRAND.green+"11",color:BRAND.green,border:"1.5px solid "+BRAND.green+"55",borderRadius:8,padding:"10px",cursor:"pointer",fontSize:13,fontWeight:700}} onClick={()=>setModalTerminar(o)}>Marcar siniestro como terminado</button>}
             {(()=>{ const listo=!!PERITO_VALUADOR_URL; return (
               <button disabled={!listo} title={listo?"Abrir Perito Valuador":"Disponible próximamente"}
@@ -3778,6 +3791,15 @@ export default function App() {
     enviadoRef.current[o.id] = js;
     encolar(o.id, () => guardarOrden(o.id)).catch(e => {
       console.error("Error al guardar la orden:", e);
+      const entrada = syncRef.current[o.id];
+      if (e.codigo === "SIN_PERMISO" && entrada) {
+        // La base de datos rechazó el cambio: la orden vuelve a como está guardada (reintentar no serviría)
+        const guardada = dbToOrden(entrada.base);
+        enviadoRef.current[o.id] = estable(ordenToDB(guardada, usuario.taller));
+        reemplazarOrden(o.id, guardada);
+        setErrorSync(`No se guardó el cambio en la orden ${o.id}: ${e.detalle || "tu usuario no tiene permiso para hacerlo"}.`);
+        return;
+      }
       delete enviadoRef.current[o.id];                   // se reintenta en el próximo cambio o en el refresco periódico
       setErrorSync(e.codigo === "NO_EXISTE" ? e.message : `No se pudo guardar la orden ${o.id}. Verifica tu conexión; se reintentará automáticamente.`);
     });
@@ -3977,7 +3999,6 @@ export default function App() {
 
   const updOrden=(id,cambios,entrada)=>{ const fn=prev=>prev.map(o=>{if(o.id!==id)return o;const n={...o,...cambios};if(entrada)n.bitacora=[...(o.bitacora||[]),{...entrada,fecha:hoy()}];return n;}); setOrdenes(fn); setOrdenSel(prev=>{if(!prev||prev.id!==id)return prev;const n={...prev,...cambios};if(entrada)n.bitacora=[...(prev.bitacora||[]),{...entrada,fecha:hoy()}];return n;}); };
   const avanzarEstado=id=>{const o=ordenes.find(x=>x.id===id);if(!o)return;const i=PASOS.indexOf(o.estado);if(i>=PASOS.length-1)return;const next=PASOS[i+1];updOrden(id,{estado:next},{accion:"Avanzó a: "+estObj(next).label,usuario:usuario.nombre});};
-  const retrocederEstado=(id,pin,motivo)=>{const sup=SUPERVISORES[pin];if(!sup)return false;const o=ordenes.find(x=>x.id===id);if(!o)return false;const i=PASOS.indexOf(o.estado);if(i<=0)return false;updOrden(id,{estado:PASOS[i-1]},{accion:"Retrocedió a: "+estObj(PASOS[i-1]).label+" - "+motivo,usuario:"Sup. "+sup});return true;};
   const enviarACobro=(id,desc,notas)=>{const o=ordenes.find(x=>x.id===id);if(!o)return;setOrdenesCobro(p=>[{...o,fechaEnvioCobro:hoy(),descuento:parseFloat(desc)||0,notasCobro:notas,bitacora:[...(o.bitacora||[]),{accion:"Enviada a cobro",usuario:usuario.nombre,fecha:hoy()}]},...p]);setOrdenes(p=>p.filter(x=>x.id!==id));setOrdenSel(null);setModalCobro(null);setSubVista("cobro");};
   const registrarPago=(id,met,ref)=>{const o=ordenesCobro.find(x=>x.id===id);if(!o)return;setOrdenesCobradas(p=>[{...o,fechaPago:hoy(),metodoPago:met,referenciaPago:ref,bitacora:[...(o.bitacora||[]),{accion:"Pago: "+met+(ref?" Ref:"+ref:""),usuario:usuario.nombre,fecha:hoy()}]},...p]);setOrdenesCobro(p=>p.filter(x=>x.id!==id));setModalPago(null);setSubVista("cobradas");};
   const cerrarOrden=(id,motivo)=>{const o=ordenes.find(x=>x.id===id);if(!o)return;setHistorial(p=>[{...o,fechaCierre:hoy(),motivoCierre:motivo,bitacora:[...(o.bitacora||[]),{accion:"Cerrada: "+motivo,usuario:usuario.nombre,fecha:hoy()}]},...p]);setOrdenes(p=>p.filter(x=>x.id!==id));setOrdenSel(null);setModalCerrar(null);};
@@ -4129,16 +4150,18 @@ export default function App() {
 
   const ModalTerminar=()=>{if(!modalTerminar)return null;return(<div style={S.overlay} onClick={()=>setModalTerminar(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:16,fontWeight:800,color:BRAND.green,marginBottom:6}}>Terminar Siniestro</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:16}}>{modalTerminar.id} - {modalTerminar.cliente}</div><div style={{background:BRAND.bg,borderRadius:10,padding:"0.85rem",marginBottom:16}}>{["Se moverá a la sección Terminadas","Se conservará por 1 año (365 días)","Aviso 30 días antes de expirar"].map((t,i)=><div key={i} style={{fontSize:12,color:BRAND.text,marginBottom:6}}>✓ {t}</div>)}</div><div style={{display:"flex",gap:8}}><button style={{...S.btnGreen,flex:1,padding:"0.65rem",fontSize:14}} onClick={()=>terminarOrden(modalTerminar.id)}>Confirmar terminado</button><button style={S.btnSm()} onClick={()=>setModalTerminar(null)}>Cancelar</button></div></div></div>);};
   const ModalCerrar=()=>{const [m,sm]=useState("");if(!modalCerrar)return null;return(<div style={S.overlay} onClick={()=>setModalCerrar(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.accent,marginBottom:4}}>Cerrar Orden {modalCerrar.id}</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>Se moverá al historial por {DIAS_HIST} días.</div><label style={S.label}>Motivo</label><select style={{...S.select,marginBottom:14}} value={m} onChange={e=>sm(e.target.value)}><option value="">Seleccionar...</option><option>Vehículo entregado al cliente</option><option>Cancelado por el cliente</option><option>Trabajo terminado sin entrega</option><option>Orden duplicada</option><option>Otro</option></select><div style={{display:"flex",gap:8}}><button style={S.btnDanger} disabled={!m} onClick={()=>cerrarOrden(modalCerrar.id,m)}>Confirmar cierre</button><button style={S.btnSm()} onClick={()=>setModalCerrar(null)}>Cancelar</button></div></div></div>);};
-  const ModalRetroceder=()=>{const [pin,sp]=useState("");const [mot,sm]=useState("");const [err,se]=useState("");if(!modalRetroceder)return null;const o=modalRetroceder;const i=PASOS.indexOf(o.estado);const ant=i>0?estObj(PASOS[i-1]):null;const esAdmin=puedePerm(usuario,"todo");
-    const ok=()=>{ if(!mot){se("Indica el motivo.");return;}
-      if(esAdmin){ const oo=ordenes.find(x=>x.id===o.id); const ii=PASOS.indexOf(oo.estado); if(ii>0){ updOrden(o.id,{estado:PASOS[ii-1]},{accion:"Retrocedió a: "+estObj(PASOS[ii-1]).label+" - "+mot,usuario:usuario.nombre+" (admin)"}); } setModalRetroceder(null); return; }
-      if(!SUPERVISORES[pin]){se("PIN incorrecto. Pide a un administrador que autorice.");return;}
-      if(retrocederEstado(o.id,pin,mot))setModalRetroceder(null);
-    };
-    return(<div style={S.overlay} onClick={()=>setModalRetroceder(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.blue,marginBottom:4}}>Retroceder Proceso</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>De {estObj(o.estado).label}{ant?" a "+ant.label:""}</div>
-      {esAdmin?<div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:12,fontSize:12,color:BRAND.green}}>Como administrador, puedes autorizar este retroceso directamente.</div>
-        :<><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:12,fontSize:12,color:BRAND.muted}}>Requiere PIN de supervisor</div><label style={S.label}>PIN</label><input style={{...S.input,marginBottom:10,letterSpacing:4,fontSize:18,textAlign:"center"}} type="password" maxLength={6} placeholder="••••••" value={pin} onChange={e=>{sp(e.target.value);se("");}} /></>}
-      <label style={S.label}>Motivo</label><textarea style={{...S.input,minHeight:55,resize:"none",marginBottom:10}} value={mot} onChange={e=>sm(e.target.value)} />{err&&<div style={{fontSize:12,color:"#EF4444",marginBottom:10}}>{err}</div>}<div style={{display:"flex",gap:8}}><button style={{...S.btn,background:BRAND.blue}} onClick={ok}>Autorizar</button><button style={S.btnSm()} onClick={()=>setModalRetroceder(null)}>Cancelar</button></div>{!esAdmin&&<div style={{fontSize:10,color:BRAND.muted,marginTop:10}}>PINs demo: SUP001 - SUP002</div>}</div></div>);};
+  // Regresar a la etapa anterior: solo el administrador, con motivo; queda en la bitácora con su nombre.
+  // La base de datos aplica la misma regla (migracion_retroceso_solo_admin.sql).
+  const ModalRetroceder=()=>{const [mot,sm]=useState("");const [err,se]=useState("");if(!modalRetroceder)return null;const o=modalRetroceder;const i=PASOS.indexOf(o.estado);const ant=i>0?estObj(PASOS[i-1]):null;const esAdmin=puedePerm(usuario,"todo");
+    const ok=()=>{ if(!esAdmin){se("Solo un administrador puede regresar una orden a la etapa anterior.");return;} if(!mot.trim()){se("Indica el motivo.");return;}
+      const oo=ordenes.find(x=>x.id===o.id); const ii=oo?PASOS.indexOf(oo.estado):-1;
+      if(ii>0){ updOrden(o.id,{estado:PASOS[ii-1]},{accion:"Retrocedió a: "+estObj(PASOS[ii-1]).label+" - "+mot.trim(),usuario:usuario.nombre+" (admin)"}); }
+      setModalRetroceder(null); };
+    return(<div style={S.overlay} onClick={()=>setModalRetroceder(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.blue,marginBottom:4}}>Regresar a la etapa anterior</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>De {estObj(o.estado).label}{ant?" a "+ant.label:""}. Quedará en la bitácora con tu nombre.</div>
+      {esAdmin
+        ?<><label style={S.label}>Motivo</label><textarea style={{...S.input,minHeight:55,resize:"none",marginBottom:10}} value={mot} onChange={e=>{sm(e.target.value);se("");}} />{err&&<div style={{fontSize:12,color:"#EF4444",marginBottom:10}}>{err}</div>}<div style={{display:"flex",gap:8}}><button style={{...S.btn,background:BRAND.blue}} onClick={ok}>Regresar etapa</button><button style={S.btnSm()} onClick={()=>setModalRetroceder(null)}>Cancelar</button></div></>
+        :<><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:12,fontSize:12,color:BRAND.muted}}>Solo un administrador puede regresar una orden a la etapa anterior.</div><button style={S.btnSm()} onClick={()=>setModalRetroceder(null)}>Cerrar</button></>}
+    </div></div>);};
   const ModalCobro=()=>{const [desc,sd]=useState("");const [notas,sn]=useState("");if(!modalCobro)return null;const total=Math.max(0,(modalCobro.costo||0)-(parseFloat(desc)||0));return(<div style={S.overlay} onClick={()=>setModalCobro(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.green,marginBottom:4}}>Enviar a Cobro</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>{modalCobro.id} - {modalCobro.cliente}</div><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:14}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:8}}><span style={{color:BRAND.muted}}>Costo</span><span style={{fontWeight:600}}>${(modalCobro.costo||0).toLocaleString("es-MX")}</span></div><label style={S.label}>Descuento ($)</label><input style={{...S.input,marginBottom:10}} type="number" placeholder="0" value={desc} onChange={e=>sd(e.target.value)} /><div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700,borderTop:"0.5px solid "+BRAND.border,paddingTop:8}}><span style={{color:BRAND.muted}}>Total</span><span style={{color:BRAND.green}}>${total.toLocaleString("es-MX")}</span></div></div><label style={S.label}>Notas (opcional)</label><textarea style={{...S.input,minHeight:50,resize:"none",marginBottom:14}} value={notas} onChange={e=>sn(e.target.value)} /><div style={{display:"flex",gap:8}}><button style={S.btnGreen} onClick={()=>enviarACobro(modalCobro.id,desc,notas)}>Confirmar</button><button style={S.btnSm()} onClick={()=>setModalCobro(null)}>Cancelar</button></div></div></div>);};
   const ModalPago=()=>{const [met,sm]=useState("Efectivo");const [ref,sr]=useState("");if(!modalPago)return null;const total=Math.max(0,(modalPago.costo||0)-(modalPago.descuento||0));return(<div style={S.overlay} onClick={()=>setModalPago(null)}><div style={S.modalBox} onClick={e=>e.stopPropagation()}><div style={{fontSize:15,fontWeight:700,color:BRAND.purple,marginBottom:4}}>Registrar Pago</div><div style={{fontSize:12,color:BRAND.muted,marginBottom:14}}>{modalPago.id} - {modalPago.cliente}</div><div style={{background:BRAND.bg,borderRadius:8,padding:"0.75rem",marginBottom:14}}><div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700}}><span style={{color:BRAND.muted}}>Total</span><span style={{color:BRAND.green}}>${total.toLocaleString("es-MX")}</span></div></div><label style={S.label}>Método de pago</label><select style={{...S.select,marginBottom:10}} value={met} onChange={e=>sm(e.target.value)}>{["Efectivo","Transferencia","Tarjeta débito","Tarjeta crédito","Cheque","Aseguradora"].map(x=><option key={x}>{x}</option>)}</select><label style={S.label}>Referencia (opcional)</label><input style={{...S.input,marginBottom:14}} value={ref} onChange={e=>sr(e.target.value)} /><div style={{display:"flex",gap:8}}><button style={{...S.btn,background:BRAND.purple}} onClick={()=>registrarPago(modalPago.id,met,ref)}>Confirmar pago</button><button style={S.btnSm()} onClick={()=>setModalPago(null)}>Cancelar</button></div></div></div>);};
 
