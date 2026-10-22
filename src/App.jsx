@@ -7,6 +7,18 @@ const MODO_DEMO = !SUPA_URL || SUPA_URL.includes("TU_PROJECT_ID");
 // Captcha de Cloudflare Turnstile. La site key es pública; la secret key vive solo en Supabase.
 // Si está vacía (p. ej. una copia local sin configurar), la app funciona sin captcha.
 const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
+// Documentos legales (viven en el sitio). Si publicas una versión nueva de los términos o del aviso,
+// cambia VERSION_LEGAL: cada cuenta nueva guarda la versión que aceptó al registrarse.
+const URL_PRIVACIDAD = "https://repairx.com.mx/privacidad";
+const URL_TERMINOS   = "https://repairx.com.mx/terminos";
+const VERSION_LEGAL  = "2026-10-20";
+// Suscripción con Mercado Pago: pega en "liga" el link de cada plan
+// (Mercado Pago → Planes de suscripción → Compartir → Copiar link). Un plan sin link no se muestra.
+// En "precio" escribe el texto tal como quieres que se lea, p. ej. "$499 al mes + IVA".
+const PLANES_PAGO = [
+  { nombre: "RepairX mensual", precio: "", liga: "" },
+];
+const PLANES_CON_LIGA = PLANES_PAGO.filter(p => /^https:\/\/\S+$/.test(String(p.liga || "").trim()));
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Identidad: fuente Archivo (alojada en /fonts, licencia SIL OFL) y favicon ─
@@ -27,10 +39,12 @@ function LogoRX({ alto = 20, centrado = false }) {
   return <img src="/img/logo-repairx.svg" alt="RepairX" style={{ height: alto, width: "auto", display: "block", margin: centrado ? "0 auto" : 0 }} />;
 }
 
+// Neutros: #FFFFFF (tarjetas) · #EEF2F6 (fondo) · #C8D2E0 (bordes) · #5A6B7F (texto secundario) · #1D2733 (texto).
+// El naranja es el de la marca; verde, azul, rojo y ámbar indican estados.
 const BRAND = {
   accent:"#FF5C35", accentB:"#FF8A65", green:"#00A37A", blue:"#2563EB",
-  purple:"#7C3AED", bg:"#F4F5F7", card:"#FFFFFF", card2:"#FFFFFF",
-  border:"#E2E4E9", text:"#1A1C22", muted:"#6B7280", dimmed:"#C4C8D0",
+  purple:"#7C3AED", bg:"#EEF2F6", card:"#FFFFFF", card2:"#FFFFFF",
+  border:"#C8D2E0", text:"#1D2733", muted:"#5A6B7F", dimmed:"#C8D2E0",
 };
 
 const supaHeaders = {
@@ -844,7 +858,7 @@ const DEMOS = [
 const puedePerm = (usr, perm) => { if(!usr)return false; const p=(ROLES[usr.rol]||{}).permisos||[]; return p.includes("todo")||p.includes(perm); };
 
 const ESTADOS = [
-  { key:"presupuesto", label:"Presupuesto", color:"#6B7280" },
+  { key:"presupuesto", label:"Presupuesto", color:"#5A6B7F" },
   { key:"mecanica",    label:"Mecánica",    color:"#3B82F6" },
   { key:"hojalateria", label:"Hojalatería", color:"#F59E0B" },
   { key:"pintura",     label:"Pintura",     color:"#EF4444" },
@@ -866,7 +880,7 @@ const CATS_NOV = [
   {key:"cliente",     label:"Cliente",     color:"#3B82F6"},
   {key:"aseguradora", label:"Aseguradora", color:"#10B981"},
   {key:"pendiente",   label:"Pendiente",   color:"#EF4444"},
-  {key:"general",     label:"General",     color:"#6B7280"},
+  {key:"general",     label:"General",     color:"#5A6B7F"},
 ];
 const DIAS_HIST = 30;
 const DIAS_TERM = 365;
@@ -953,17 +967,17 @@ const ORDENES_INIT = [
 ];
 
 const mkS = () => ({
-  card:     {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:12,padding:"1rem 1.25rem",boxShadow:"0 1px 3px rgba(16,24,40,0.06)"},
-  metric:   {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:12,padding:"1rem 1.25rem",textAlign:"center",boxShadow:"0 1px 3px rgba(16,24,40,0.06)"},
+  card:     {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:12,padding:"1rem 1.25rem",boxShadow:"0 1px 3px rgba(29,39,51,0.06)"},
+  metric:   {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:12,padding:"1rem 1.25rem",textAlign:"center",boxShadow:"0 1px 3px rgba(29,39,51,0.06)"},
   btn:      {background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.5rem 1.1rem",cursor:"pointer",fontSize:13,fontWeight:600},
   btnGreen: {background:BRAND.green, color:"#fff",border:"none",borderRadius:10,padding:"0.5rem 1.1rem",cursor:"pointer",fontSize:13,fontWeight:600},
   btnDanger:{background:"#FEE2E2",   color:"#B91C1C",border:"1px solid #FCA5A5",borderRadius:10,padding:"0.5rem 1.1rem",cursor:"pointer",fontSize:13,fontWeight:500},
-  btnSm:    col=>({background:col||"#EEF0F3",color:col?"#fff":BRAND.text,border:"none",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:11,fontWeight:500}),
+  btnSm:    col=>({background:col||BRAND.bg,color:col?"#fff":BRAND.text,border:"none",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:11,fontWeight:500}),
   input:    {background:"#FFFFFF",border:"1px solid "+BRAND.border,borderRadius:9,padding:"0.5rem 0.8rem",color:BRAND.text,fontSize:13,width:"100%",boxSizing:"border-box"},
   select:   {background:"#FFFFFF",border:"1px solid "+BRAND.border,borderRadius:9,padding:"0.5rem 0.8rem",color:BRAND.text,fontSize:13,width:"100%",boxSizing:"border-box"},
   label:    {fontSize:11,color:BRAND.muted,marginBottom:3,display:"block"},
-  overlay:  {position:"fixed",inset:0,background:"rgba(16,24,40,0.45)",zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"},
-  modalBox: {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.5rem",width:340,maxWidth:"90vw",boxShadow:"0 24px 60px rgba(16,24,40,0.25)"},
+  overlay:  {position:"fixed",inset:0,background:"rgba(29,39,51,0.45)",zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"},
+  modalBox: {background:BRAND.card,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.5rem",width:340,maxWidth:"90vw",boxShadow:"0 24px 60px rgba(29,39,51,0.25)"},
 });
 
 // ─── Login / Registro ─────────────────────────────────────────────────────────
@@ -1125,7 +1139,7 @@ function NuevaPasswordScreen({ token, onListo, onCancelar }) {
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
       <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><LogoRX alto={30} centrado /></div>
-      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
+      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(29,39,51,0.12)"}}>
         <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Crea tu nueva contraseña</div>
         <div style={{fontSize:12,color:BRAND.muted,marginBottom:18}}>Al guardarla se cerrará la sesión en todos tus dispositivos.</div>
         {lab("Nueva contraseña")}
@@ -1169,7 +1183,7 @@ function PantallaPendiente({ usuario, onActualizar, onLogout }) {
   return (
     <div style={{minHeight:"100vh",background:BRAND.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"1.5rem"}}>
       <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:28}}><LogoRX alto={30} centrado /></div>
-      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)",textAlign:"center"}}>
+      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(29,39,51,0.12)",textAlign:"center"}}>
         <div style={{fontSize:40,marginBottom:10}}>{rechazado ? "⛔" : "⏳"}</div>
         <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>{rechazado ? "Solicitud no aprobada" : "Solicitud en espera"}</div>
         <div style={{fontSize:13,color:BRAND.muted,lineHeight:1.55,marginBottom:18}}>
@@ -1190,6 +1204,9 @@ function LoginScreen({ onLogin, aviso }) {
   const [em,setEm]=useState(""); const [pw,setPw]=useState("");
   const [nombre,setNombre]=useState(""); const [tallerNombre,setTallerNombre]=useState(""); const [codigo,setCodigo]=useState("");
   const [logo,setLogo]=useState(null); const logoRef=useRef();
+  const [acepto,setAcepto]=useState(false);
+  const faltaAceptar = () => { if (!acepto) { setErr("Para registrarte, acepta los Términos y condiciones y el Aviso de privacidad."); return true; } return false; };
+  const aceptacionLegal = () => ({ acepto_terminos: VERSION_LEGAL, acepto_terminos_en: new Date().toISOString() });
   const captchaActivo = !!TURNSTILE_SITE_KEY && !MODO_DEMO;
   const [captcha,setCaptcha]=useState(""); const [reinicioCaptcha,setReinicioCaptcha]=useState(0);
   const nuevoCaptcha = () => { if (captchaActivo) setReinicioCaptcha(n => n + 1); };
@@ -1242,9 +1259,10 @@ function LoginScreen({ onLogin, aviso }) {
   const doCrear = async () => {
     if(!tallerNombre.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
     { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
+    if(faltaAceptar()) return;
     if(faltaCaptcha()) return;
     setL(true);setErr("");setInfo("");
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"" }, captcha);
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"crear_taller", nombre:nombre.trim(), taller_nombre:tallerNombre.trim(), logo:logo||"", ...aceptacionLegal() }, captcha);
     nuevoCaptcha();
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
@@ -1254,11 +1272,12 @@ function LoginScreen({ onLogin, aviso }) {
   const doUnir = async () => {
     if(!codigo.trim()||!nombre.trim()||!em.trim()||!pw){setErr("Completa todos los campos.");return;}
     { const ep=validarPassword(pw); if(ep){setErr(ep);return;} }
+    if(faltaAceptar()) return;
     if(faltaCaptcha()) return;
     setL(true);setErr("");setInfo("");
     const taller = await supaApi.verificarTaller(codigo.trim().toUpperCase());
     if(!taller){ setErr("El código de taller no existe. Verifícalo con tu administrador."); setL(false); return; }
-    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase() }, captcha);
+    const { session, user, error } = await supaAuth.signUp(em.trim().toLowerCase(), pw, { accion:"unir", nombre:nombre.trim(), taller_codigo:codigo.trim().toUpperCase(), ...aceptacionLegal() }, captcha);
     nuevoCaptcha();
     if(error){setErr(error);setL(false);return;}
     if(session&&session.access_token) await completarLogin(session, user);
@@ -1289,7 +1308,7 @@ function LoginScreen({ onLogin, aviso }) {
         <div style={{fontSize:36,fontWeight:900,letterSpacing:3,marginBottom:6}}><LogoRX alto={30} centrado /></div>
         <div style={{fontSize:12,color:BRAND.muted,letterSpacing:1,textTransform:"uppercase"}}>Gestión inteligente de taller</div>
       </div>
-      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(16,24,40,0.12)"}}>
+      <div style={{background:BRAND.card2,border:"1px solid "+BRAND.border,borderRadius:16,padding:"1.75rem",width:"100%",maxWidth:380,boxShadow:"0 12px 40px rgba(29,39,51,0.12)"}}>
         {!MODO_DEMO&&(
           <div style={{display:"flex",gap:4,marginBottom:18,background:BRAND.bg,borderRadius:10,padding:3}}>
             {[{k:"login",l:"Entrar"},{k:"crear",l:"Registrar taller"},{k:"unir",l:"Unirme"}].map(t=>(
@@ -1329,12 +1348,23 @@ function LoginScreen({ onLogin, aviso }) {
         </>}
         {err&&<div style={{background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#EF4444",marginBottom:14}}>{err}</div>}
         {info&&<div style={{background:BRAND.green+"22",border:"0.5px solid "+BRAND.green+"44",borderRadius:8,padding:"8px 12px",fontSize:12,color:BRAND.green,marginBottom:14}}>{info}</div>}
+        {(modo==="crear"||modo==="unir")&&(
+          <label style={{display:"flex",gap:9,alignItems:"flex-start",fontSize:12,color:BRAND.text,lineHeight:1.45,marginBottom:14,cursor:"pointer"}}>
+            <input type="checkbox" checked={acepto} onChange={e=>{ setAcepto(e.target.checked); if (e.target.checked) setErr(""); }} style={{margin:"1px 0 0",width:16,height:16,flexShrink:0,accentColor:BRAND.accent,cursor:"pointer"}} />
+            <span>Acepto los <a href={URL_TERMINOS} target="_blank" rel="noopener noreferrer" style={{color:BRAND.accent,fontWeight:600}}>Términos y condiciones</a> y el <a href={URL_PRIVACIDAD} target="_blank" rel="noopener noreferrer" style={{color:BRAND.accent,fontWeight:600}}>Aviso de privacidad</a> de RepairX.</span>
+          </label>
+        )}
         {captchaActivo&&<Captcha onToken={setCaptcha} reinicio={reinicioCaptcha} />}
         <button style={{width:"100%",background:BRAND.accent,color:"#fff",border:"none",borderRadius:10,padding:"0.75rem",fontSize:14,fontWeight:700,cursor:(loading||(captchaActivo&&!captcha))?"not-allowed":"pointer",opacity:(loading||(captchaActivo&&!captcha))?0.7:1}} onClick={submit} disabled={loading||(captchaActivo&&!captcha)}>
           {loading?"Procesando...":modo==="recuperar"?"Enviar enlace":modo==="login"?"Entrar":modo==="crear"?"Crear taller":"Unirme"}
         </button>
         {captchaActivo&&!captcha&&!loading&&<div style={{fontSize:11,color:BRAND.muted,textAlign:"center",marginTop:8}}>Verificando que no eres un robot…</div>}
         {modo==="recuperar"&&<button type="button" onClick={()=>cambiarModo("login")} style={{width:"100%",marginTop:10,background:"none",border:"none",color:BRAND.muted,fontSize:12,cursor:"pointer"}}>← Volver a iniciar sesión</button>}
+      </div>
+      <div style={{marginTop:18,fontSize:11,color:BRAND.muted,textAlign:"center"}}>
+        <a href={URL_PRIVACIDAD} target="_blank" rel="noopener noreferrer" style={{color:BRAND.muted}}>Aviso de privacidad</a>
+        <span aria-hidden="true"> · </span>
+        <a href={URL_TERMINOS} target="_blank" rel="noopener noreferrer" style={{color:BRAND.muted}}>Términos y condiciones</a>
       </div>
       {MODO_DEMO&&(
         <div style={{marginTop:24,width:"100%",maxWidth:380}}>
@@ -1421,6 +1451,10 @@ function Sidebar({ vista, setVista, setOrdenSel, hLen, tLen, desktop, esAdmin, l
       <div style={{padding:"0.85rem 1.25rem",borderTop:"0.5px solid "+BRAND.border}}>
         <div style={{fontSize:10,color:BRAND.muted}}>REPAIRX 2026</div>
         <div style={{fontSize:9,color:BRAND.dimmed,marginTop:2}}>v1.2</div>
+        <div style={{fontSize:10,marginTop:6,display:"flex",gap:10,flexWrap:"wrap"}}>
+          <a href={URL_PRIVACIDAD} target="_blank" rel="noopener noreferrer" style={{color:BRAND.muted}}>Privacidad</a>
+          <a href={URL_TERMINOS} target="_blank" rel="noopener noreferrer" style={{color:BRAND.muted}}>Términos</a>
+        </div>
       </div>
     </div>
   );
@@ -1748,7 +1782,7 @@ function DonaRefacciones({ segmentos, size = 180, grosor = 18, etiqueta = "pendi
   return (
     <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${total} refacciones ${etiqueta}. ${resumen}`}>
-        <circle cx={cx} cy={cx} r={r} fill="none" stroke="#EEF0F3" strokeWidth={grosor} />
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke={BRAND.bg} strokeWidth={grosor} />
         <g transform={`rotate(-90 ${cx} ${cx})`}>
           {arcos.map(a => (
             <g key={a.key}>
@@ -2139,7 +2173,7 @@ function SeccionRefacciones({ ordenes, desktop, puedeEdit, onCambiar, onAbrirOrd
           <div role="group" aria-label="Agrupar" style={{display:"inline-flex",background:BRAND.bg,border:"1px solid "+BRAND.border,borderRadius:9,padding:2,gap:2,flexShrink:0}}>
             {[{k:"orden",l:"Por orden"},{k:"proveedor",l:"Por proveedor"}].map(op => { const sel = agrupar === op.k; return (
               <button key={op.k} type="button" aria-pressed={sel} onClick={()=>setAgrupar(op.k)}
-                style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(16,24,40,0.12)":"none"}}>{op.l}</button>); })}
+                style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(29,39,51,0.12)":"none"}}>{op.l}</button>); })}
           </div>
         </div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
@@ -2269,7 +2303,7 @@ const ESTADOS_ENTREGA = {
   manana:  { label:"Para mañana",     texto:"#1D4ED8", fondo:"#EFF6FF", borde:"#93C5FD", tv:"#5B9BFF" },
   semana:  { label:"Próximos 6 días", texto:"#1D4ED8", fondo:"#EFF6FF", borde:"#BFDBFE", tv:"#5B9BFF" },
   despues: { label:"Más adelante",    texto:"#047857", fondo:"#ECFDF5", borde:"#6EE7B7", tv:"#34C77B" },
-  sin:     { label:"Sin fecha",       texto:"#4B5563", fondo:"#F3F4F6", borde:"#D1D5DB", tv:"#8B93A1" },
+  sin:     { label:"Sin fecha",       texto:"#5A6B7F", fondo:"#EEF2F6", borde:"#C8D2E0", tv:"#919EB0" },
 };
 const estadoEntrega = (o, hoyStr) => {
   const d = diasParaEntrega(o, hoyStr);
@@ -2429,7 +2463,7 @@ const COLORES_AUTO = {
   champagne:"#E0D1AE", morado:"#5B3A8C", rosa:"#E58FB0", turquesa:"#1FA4A4",
 };
 const colorDeAuto = c => COLORES_AUTO[String(c || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim().split(/\s+/)[0]] || null;
-const COLOR_ETAPA_TV = { presupuesto:"#A0A7B4", mecanica:"#4F8EF7", hojalateria:"#F5A524", pintura:"#F25555", armado:"#1FD1A5" };
+const COLOR_ETAPA_TV = { presupuesto:"#919EB0", mecanica:"#4F8EF7", hojalateria:"#F5A524", pintura:"#F25555", armado:"#1FD1A5" };
 const colorDiasTV = d => d > DIAS_ALERTA ? "hsl(0, 85%, 66%)" : `hsl(${Math.round(140 - (125 * d) / DIAS_ALERTA)}, 72%, 58%)`;
 
 function useMedia(consulta) {
@@ -2518,8 +2552,8 @@ function usePizarron({ usuario, ordenesDemo, onSinAcceso }) {
 // Todo se dibuja en un cuadro 16:9 medido en "u" (1 % de su ancho), así se ve igual en
 // una TV de 32" o de 75", en 720p o en 4K. En un celular se muestra una versión en lista.
 const CSS_PIZARRON = `
-.pz-raiz{--bg:#15181D;--panel:#1E2228;--panel2:#262B33;--linea:#2F353E;--texto:#F1F2F4;--texto2:#A9B0BB;--texto3:#7D8592;
-  --acento:#FF5C35;--placa:#F3F4EF;--tinta:#15181D;--u:1vw;
+.pz-raiz{--bg:#1D2733;--panel:#26313E;--panel2:#2D3948;--linea:#374453;--texto:#EEF2F6;--texto2:#C8D2E0;--texto3:#919EB0;
+  --acento:#FF5C35;--placa:#FFFFFF;--tinta:#1D2733;--u:1vw;
   position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);color:var(--texto);overflow:hidden;
   display:flex;align-items:center;justify-content:center;font-family:"Archivo",system-ui,sans-serif;-webkit-font-smoothing:antialiased;z-index:1000}
 @supports (width:min(1px,2px)){.pz-raiz{--u:min(1vw,1.7778vh)}}
@@ -2565,7 +2599,7 @@ const CSS_PIZARRON = `
   height:calc(var(--u)*2.9);padding:0 calc(var(--u)*1);background:var(--placa);color:var(--tinta);border-radius:calc(var(--u)*0.45);
   font-weight:800;font-stretch:108%;font-size:calc(var(--u)*1.55);letter-spacing:.06em;white-space:nowrap;max-width:100%;overflow:hidden;
   box-shadow:inset 0 0 0 calc(var(--u)*0.11) var(--tinta),inset 0 0 0 calc(var(--u)*0.26) var(--placa),0 calc(var(--u)*0.14) 0 rgba(0,0,0,.45)}
-.pz-placa::before,.pz-placa::after{content:"";position:absolute;top:calc(var(--u)*0.42);width:calc(var(--u)*0.26);height:calc(var(--u)*0.26);border-radius:50%;background:#A3A9B1}
+.pz-placa::before,.pz-placa::after{content:"";position:absolute;top:calc(var(--u)*0.42);width:calc(var(--u)*0.26);height:calc(var(--u)*0.26);border-radius:50%;background:#919EB0}
 .pz-placa::before{left:calc(var(--u)*0.42)}.pz-placa::after{right:calc(var(--u)*0.42)}
 .pz-placa.sin{background:transparent;color:var(--texto2);box-shadow:inset 0 0 0 calc(var(--u)*0.11) var(--linea);font-weight:700;letter-spacing:.02em}
 .pz-placa.sin::before,.pz-placa.sin::after{display:none}
@@ -2645,7 +2679,7 @@ const CSS_PIZARRON = `
 .pz-puntos{display:flex;align-items:center}
 .pz-puntos i{width:calc(var(--u)*0.65);height:calc(var(--u)*0.65);border-radius:50%;background:var(--linea);margin-left:calc(var(--u)*0.45)}
 .pz-puntos i.on{background:var(--acento)}
-.pz-controles{position:absolute;left:50%;bottom:calc(var(--u)*6.4);transform:translate(-50%,10px);display:flex;align-items:center;background:rgba(30,34,40,.97);
+.pz-controles{position:absolute;left:50%;bottom:calc(var(--u)*6.4);transform:translate(-50%,10px);display:flex;align-items:center;background:rgba(38,49,62,.97);
   border:1px solid var(--linea);border-radius:999px;padding:6px;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;box-shadow:0 12px 40px rgba(0,0,0,.55);z-index:5}
 .pz-controles.visible{opacity:1;pointer-events:auto;transform:translate(-50%,0)}
 .pz-controles button{background:transparent;color:var(--texto);border:none;border-radius:999px;padding:0 18px;height:44px;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap}
@@ -3119,7 +3153,7 @@ function PlacaClara({ o }) {
   const base = { display:"inline-flex", alignItems:"center", justifyContent:"center", minWidth:96, height:32, padding:"0 10px", borderRadius:6,
     fontWeight:800, fontSize:14, letterSpacing:"0.06em", fontStretch:"108%", whiteSpace:"nowrap", flexShrink:0, boxSizing:"border-box" };
   return o.placa
-    ? <span title={"Placas " + o.placa} style={{ ...base, background:"#FFFFFF", color:BRAND.text, border:"2px solid " + BRAND.text, boxShadow:"0 1px 0 rgba(16,24,40,.25)" }}>{o.placa.toUpperCase()}</span>
+    ? <span title={"Placas " + o.placa} style={{ ...base, background:"#FFFFFF", color:BRAND.text, border:"2px solid " + BRAND.text, boxShadow:"0 1px 0 rgba(29,39,51,.25)" }}>{o.placa.toUpperCase()}</span>
     : <span title="Sin placas registradas" style={{ ...base, background:"transparent", color:BRAND.muted, border:"1.5px dashed " + BRAND.dimmed, letterSpacing:"0.02em" }}>{o.id}</span>;
 }
 
@@ -3198,7 +3232,7 @@ function FilaPizarron({ o, hoyStr, puedeEditar, abierto, onAbrir, onCerrar, onGu
         <PlacaClara o={o} />
         <div style={{ flex:"1 1 220px", minWidth:0 }}>
           <div style={{ fontSize:14, fontWeight:700, display:"flex", alignItems:"center", gap:7, minWidth:0 }}>
-            {color && <span aria-hidden="true" style={{ width:11, height:11, borderRadius:"50%", background:color, boxShadow:"0 0 0 1px rgba(16,24,40,.25)", flexShrink:0 }} />}
+            {color && <span aria-hidden="true" style={{ width:11, height:11, borderRadius:"50%", background:color, boxShadow:"0 0 0 1px rgba(29,39,51,.25)", flexShrink:0 }} />}
             <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{textoVehiculo(o.vehiculo) || "Unidad sin datos"}</span>
             {o.color && !color && <span style={{ fontSize:11, color:BRAND.muted, fontWeight:500 }}>{o.color}</span>}
           </div>
@@ -3309,7 +3343,7 @@ function SeccionPizarron({ ordenes, usuario, desktop, puedeEditar, onFecha, onAb
         <div role="group" aria-label="Ordenar" style={{ display:"inline-flex", background:BRAND.bg, border:"1px solid " + BRAND.border, borderRadius:9, padding:2, gap:2 }}>
           {[{ k:"antiguas", l:"Más antiguas primero" }, { k:"entrega", l:"Por fecha de entrega" }].map(op => { const sel = orden === op.k; return (
             <button key={op.k} type="button" aria-pressed={sel} onClick={() => setOrden(op.k)}
-              style={{ border:"none", borderRadius:7, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:"pointer", background:sel ? "#fff" : "transparent", color:sel ? BRAND.text : BRAND.muted, boxShadow:sel ? "0 1px 2px rgba(16,24,40,0.12)" : "none" }}>{op.l}</button>); })}
+              style={{ border:"none", borderRadius:7, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:"pointer", background:sel ? "#fff" : "transparent", color:sel ? BRAND.text : BRAND.muted, boxShadow:sel ? "0 1px 2px rgba(29,39,51,0.12)" : "none" }}>{op.l}</button>); })}
         </div>
       </div>
 
@@ -3977,7 +4011,7 @@ export default function App() {
     <div role="group" aria-label="Ordenar por fecha de alta" style={{display:"inline-flex",background:BRAND.bg,border:"1px solid "+BRAND.border,borderRadius:9,padding:2,gap:2,flexShrink:0}}>
       {[{k:"recientes",l:"Más recientes"},{k:"antiguas",l:"Más antiguas"}].map(op=>{ const sel=ordenLista===op.k; return (
         <button key={op.k} type="button" aria-pressed={sel} onClick={()=>cambiarOrdenLista(op.k)}
-          style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(16,24,40,0.12)":"none"}}>{op.l}</button>
+          style={{border:"none",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:600,cursor:"pointer",background:sel?"#fff":"transparent",color:sel?BRAND.text:BRAND.muted,boxShadow:sel?"0 1px 2px rgba(29,39,51,0.12)":"none"}}>{op.l}</button>
       ); })}
     </div>
   );
@@ -4394,6 +4428,20 @@ export default function App() {
     const rechazar = u => { if (!confirm(`¿Rechazar la solicitud de ${u.nombre || u.email}? No podrá ver nada del taller.`)) return; cambiarRol(u.id, "rechazado"); };
     return (
       <div style={{maxWidth:680,display:"flex",flexDirection:"column",gap:14}}>
+        {!usuario.modoDemo&&PLANES_CON_LIGA.length>0&&(
+          <div style={S.card}>
+            <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:4}}>Suscripción de RepairX</div>
+            <div style={{fontSize:12,color:BRAND.muted,marginBottom:12}}>El pago se cobra solo cada mes con Mercado Pago, y puedes cancelarlo cuando quieras desde tu cuenta de Mercado Pago. Para identificar tu pago, usa el mismo correo con el que entras a RepairX: <b style={{color:BRAND.text}}>{usuario.email}</b>.</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {PLANES_CON_LIGA.map(p=>(
+                <div key={p.liga} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:BRAND.bg,borderRadius:10,padding:"0.65rem 0.85rem"}}>
+                  <div style={{flex:1,minWidth:150}}><div style={{fontSize:13,fontWeight:700}}>{p.nombre}</div>{p.precio&&<div style={{fontSize:12,color:BRAND.muted}}>{p.precio}</div>}</div>
+                  <a href={p.liga.trim()} target="_blank" rel="noopener noreferrer" style={{...S.btn,textDecoration:"none",display:"inline-block"}}>Pagar con Mercado Pago</a>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={S.card}>
           <div style={{fontSize:13,fontWeight:700,color:BRAND.accent,marginBottom:8}}>Código del taller</div>
           <div style={{fontSize:12,color:BRAND.muted,marginBottom:10}}>Compártelo con tus colaboradores para que se registren en {usuario.tallerNombre||"tu taller"}. Quedarán como <b>solicitud pendiente</b> hasta que los apruebes aquí. Trátalo como una contraseña: no lo publiques.</div>
@@ -4468,10 +4516,10 @@ export default function App() {
       {errorSync&&<div style={{position:"fixed",bottom:16,left:"50%",transform:"translateX(-50%)",zIndex:960,background:"#7F1D1D",border:"0.5px solid #991b1b",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,maxWidth:"90vw",boxShadow:"0 8px 24px #00000088"}}><span style={{fontSize:12,color:"#fca5a5"}}>⚠️ {errorSync}</span><button onClick={()=>setErrorSync("")} style={{background:"none",border:"none",color:"#fca5a5",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button></div>}
       {cargando&&<div style={{position:"fixed",inset:0,background:"#000000cc",zIndex:980,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.5rem 2rem",textAlign:"center"}}><div style={{fontSize:24,marginBottom:8}}>⏳</div><div style={{fontSize:14,fontWeight:600,color:BRAND.text}}>Cargando órdenes...</div></div></div>}
       {subiendo&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:950,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(3px)"}}><div style={{background:BRAND.card2,border:"0.5px solid "+BRAND.border,borderRadius:14,padding:"1.25rem 1.75rem",textAlign:"center"}}><div style={{fontSize:22,marginBottom:8}}>⏳</div><div style={{fontSize:13,fontWeight:600,color:BRAND.text}}>{subiendo}</div></div></div>}
-      {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><ImagenArchivo item={fotoAmpliada} token={usuario?.token} alt={fotoAmpliada.nombre} style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#222",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
+      {fotoAmpliada&&<div style={S.overlay} onClick={()=>setFotoAmpliada(null)}><ImagenArchivo item={fotoAmpliada} token={usuario?.token} alt={fotoAmpliada.nombre} style={{maxWidth:"90vw",maxHeight:"85vh",borderRadius:12,objectFit:"contain"}} /><button style={{position:"absolute",top:16,right:16,background:"#1D2733",border:"none",color:"#fff",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16}} onClick={()=>setFotoAmpliada(null)}>✕</button></div>}
       <Sidebar vista={vista} setVista={(v)=>{setVista(v);setGBusqueda("");}} setOrdenSel={setOrdenSel} hLen={historial.length} tLen={ordenesTerminadas.length} desktop={desktop} esAdmin={puedePerm(usuario,"todo")} logo={usuario.logo} tallerNombre={usuario.tallerNombre||usuario.taller} pendientes={pendientesEquipo} refPend={resRef.pendientes} refAtrasadas={resRef.atrasadas} pizAlertas={resPiz.vencida + resPiz.hoy} />
       <div style={{marginLeft:desktop?240:0,display:"flex",flexDirection:"column",minHeight:"100vh",minWidth:0}}>
-        <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(16,24,40,0.08)"}}>
+        <div style={{position:"sticky",top:0,zIndex:100,flexShrink:0,boxShadow:"0 1px 8px rgba(29,39,51,0.08)"}}>
           <div style={{padding:desktop?"0 1rem":"0 1rem 0 58px",minHeight:48,borderBottom:"0.5px solid "+BRAND.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:BRAND.card}}>
             <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
               {!desktop&&<span style={{fontSize:15,fontWeight:900,letterSpacing:2}}><LogoRX alto={14} /></span>}
