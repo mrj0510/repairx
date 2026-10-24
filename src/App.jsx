@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 
 // ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
 const SUPA_URL  = import.meta.env.VITE_SUPABASE_URL;
@@ -1524,7 +1525,7 @@ function EditarId({ o, ordenes, setOrdenes, setOrdenSel, fSize, puedeAdmin, usua
       try{ const version = await supaApi.renombrarOrden(usuario.token, o.tallerId||usuario.taller, o.id, nv); if (onRenombrado) onRenombrado(o.id, nv, version); }
       catch(e){ setGuardandoId(false); alert(e.message==="DUPLICADO"?"Ya existe una orden con ese número en tu taller (puede estar en Cobro, Terminadas o Historial).":"No se pudo renombrar la orden. "+e.message); return; }
       setGuardandoId(false);
-    }
+    } else if (onRenombrado) onRenombrado(o.id, nv, null);
     const upd=ordenes.map(x=>x.id===o.id?{...x,id:nv}:x); setOrdenes(upd); setOrdenSel(upd.find(x=>x.id===nv)||null); setEdit(false);
   };
   const cancel=()=>{ setVal(o.id); setEdit(false); };
@@ -3365,7 +3366,7 @@ function SeccionPizarron({ ordenes, usuario, desktop, puedeEditar, onFecha, onAb
   );
 }
 
-function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario , onRenombrado}) {
+function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTabDetalle, avanzarEstado, setModalRetroceder, setModalCerrar, setModalCobro, setModalTerminar, fotoRef, docRef, docTipo, setDocTipo, docNombre, setDocNombre, agregarFotos, eliminarFoto, agregarDoc, eliminarDoc, setFotoAmpliada, usuario , onRenombrado, revs, taller, recienCreada, onBitacora}) {
   const S=mkS(); const idx=PASOS.indexOf(o.estado); const eAct=ESTADOS.find(e=>e.key===o.estado)||ESTADOS[0];
   const puedeEdit=puedePerm(usuario,"editar_ordenes"); const puedeAdmin=puedePerm(usuario,"todo");
   const cambiarUbicacion = aTransito => {
@@ -3376,6 +3377,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
     const upd = ordenes.map(x => x.id === o.id ? { ...x, ...cambios, bitacora: [...(x.bitacora || []), entrada] } : x);
     setOrdenes(upd); setOrdenSel(upd.find(x => x.id === o.id));
   };
+  const estRev = revs ? revs.estadoDeOrden(o) : null;
   return (
     <div style={{background:BRAND.card,borderRadius:14,border:"0.5px solid "+BRAND.border,overflow:"hidden"}}>
       <div style={{padding:"0.75rem 1rem",background:BRAND.bg,borderBottom:"0.5px solid "+BRAND.border}}>
@@ -3389,7 +3391,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
       </div>
       <div style={{borderBottom:"0.5px solid "+BRAND.border,background:BRAND.card}}>
         {/* CAMBIO: etiqueta "💬 Novedades" completa */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"refacciones",l:"🔧 Refacciones"+((o.refacciones||[]).length?" ("+(o.refacciones||[]).filter(r=>r.recibida).length+"/"+(o.refacciones||[]).length+")":"")},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%4!==3?"0.5px solid "+BRAND.border:"none",borderTop:i>=4?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)"}}>{[{k:"info",l:"📋 Info"},{k:"revision",l:<>🔍 Revisión{estRev&&estRev.tipo==="pendiente"?<span style={{color:SEM.a.color}}> ●</span>:estRev&&estRev.tipo==="lista"?<span style={{color:SEM.v.color}}> ✓</span>:null}</>},{k:"fotos",l:"📷 Fotos"+(o.fotos?.length?" ("+o.fotos.length+")":"")},{k:"docs",l:"📁 Docs"+(o.documentos?.length?" ("+o.documentos.length+")":"")},{k:"ficha",l:"📑 Ficha"},{k:"refacciones",l:"🔧 Refacciones"+((o.refacciones||[]).length?" ("+(o.refacciones||[]).filter(r=>r.recibida).length+"/"+(o.refacciones||[]).length+")":"")},{k:"novedades",l:"💬 Novedades"+(o.novedades?.length?" ("+o.novedades.length+")":"")},{k:"bitacora",l:"📝 Bitácora"}].map((t,i)=><button key={t.k} style={{padding:"10px 6px",fontSize:12,cursor:"pointer",color:tabDetalle===t.k?BRAND.accent:BRAND.muted,background:tabDetalle===t.k?BRAND.accent+"0D":"none",border:"none",borderBottom:tabDetalle===t.k?"2px solid "+BRAND.accent:"2px solid transparent",borderRight:i%4!==3?"0.5px solid "+BRAND.border:"none",borderTop:i>=4?"0.5px solid "+BRAND.border:"none",fontWeight:tabDetalle===t.k?700:400,textAlign:"center"}} onClick={()=>setTabDetalle(t.k)}>{t.l}</button>)}</div>
         <button onClick={()=>setOrdenSel(null)} style={{width:"100%",padding:"7px",fontSize:11,cursor:"pointer",color:BRAND.muted,background:"none",border:"none",borderTop:"0.5px solid "+BRAND.border,textAlign:"center"}}>← Volver a lista</button>
       </div>
       <div style={{padding:"1rem"}}>
@@ -3451,6 +3453,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
           </div>
         )}
         {tabDetalle==="ficha"&&<FichaDetalle o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} usuario={usuario} />}
+        {tabDetalle==="revision"&&revs&&<RevisionOrden key={o.id} o={o} revs={revs} usuario={usuario} taller={taller} recienCreada={recienCreada===o.id} onBitacora={onBitacora} telefono={o.telefono} />}
         {tabDetalle==="novedades"&&<Novedades orden={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} S={S} />}
         {tabDetalle==="refacciones"&&<ChecklistRefacciones o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} puedeEdit={puedeEdit} usuario={usuario} S={S} />}
         {tabDetalle==="bitacora"&&<div><div style={{fontSize:12,color:BRAND.muted,marginBottom:12}}>Historial de cambios</div>{(o.bitacora||[]).slice().reverse().map((b,i)=><div key={i} style={{display:"flex",gap:12,marginBottom:14,alignItems:"flex-start"}}><div style={{width:8,height:8,borderRadius:"50%",background:BRAND.accent,marginTop:5,flexShrink:0}} /><div><div style={{fontSize:13,fontWeight:500}}>{b.accion}</div><div style={{fontSize:11,color:BRAND.muted}}>{b.usuario} - {b.fecha}</div></div></div>)}</div>}
@@ -3459,7 +3462,7 @@ function OrdenExpandida({ o, ordenes, setOrdenes, setOrdenSel, tabDetalle, setTa
   );
 }
 
-function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
+function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge, rev, onRevision }) {
   const S=mkS(); const e=ESTADOS.find(x=>x.key===o.estado)||ESTADOS[0]; const idx=PASOS.indexOf(o.estado);
   return (
     <div style={{...S.card,cursor:"pointer",padding:"0.85rem",...((diasDesdeAlta(o)||0)>DIAS_ALERTA?{borderLeft:"4px solid hsl(0, 75%, 45%)"}:{})}} onClick={onClick}>
@@ -3468,14 +3471,1998 @@ function TarjetaOrden({ o, ordenes, setOrdenes, setOrdenSel, onClick, badge }) {
         <div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:BRAND.accent}}>{o.id}</span><span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.cliente}</span></div><div style={{fontSize:11,color:BRAND.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.vehiculo}</div></div>
         {badge?<span style={{flexShrink:0,background:BRAND.muted+"22",color:BRAND.muted,borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:600}}>{badge}</span>:<span style={{flexShrink:0,background:e.color+"18",color:e.color,border:"0.5px solid "+e.color+"44",borderRadius:20,padding:"2px 8px",fontSize:10,fontWeight:500}}>{e.label}</span>}
       </div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{o.enTransito&&(()=>{ const dT=diasEnTransito(o); return <span style={{fontSize:10,background:BRAND.blue+"12",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"44",borderRadius:5,padding:"2px 7px",fontWeight:600}}>🚗 Tránsito{dT!==null?` · ${dT} d`:""}</span>; })()}{o.llegada==="grua"&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>🚛 Grúa</span>}{(o.refacciones||[]).length>0&&(()=>{ const atr=o.refacciones.some(r=>diasAtrasoRef(r)>0); const todas=o.refacciones.every(r=>r.recibida); return <span title={atr?"Hay refacciones atrasadas":undefined} style={{fontSize:10,background:atr?COLOR_ATRASO+"12":BRAND.bg,color:atr?TEXTO_ATRASO:(todas?BRAND.green:BRAND.muted),border:atr?"0.5px solid "+COLOR_ATRASO+"55":"none",borderRadius:5,padding:"2px 7px",fontWeight:600}}>{atr?"⚠ ":""}🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>; })()}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:8}}><ContadorDias o={o} />{rev&&<ChipRevision rev={rev} onClick={onRevision} />}{o.enTransito&&(()=>{ const dT=diasEnTransito(o); return <span style={{fontSize:10,background:BRAND.blue+"12",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"44",borderRadius:5,padding:"2px 7px",fontWeight:600}}>🚗 Tránsito{dT!==null?` · ${dT} d`:""}</span>; })()}{o.llegada==="grua"&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>🚛 Grúa</span>}{(o.refacciones||[]).length>0&&(()=>{ const atr=o.refacciones.some(r=>diasAtrasoRef(r)>0); const todas=o.refacciones.every(r=>r.recibida); return <span title={atr?"Hay refacciones atrasadas":undefined} style={{fontSize:10,background:atr?COLOR_ATRASO+"12":BRAND.bg,color:atr?TEXTO_ATRASO:(todas?BRAND.green:BRAND.muted),border:atr?"0.5px solid "+COLOR_ATRASO+"55":"none",borderRadius:5,padding:"2px 7px",fontWeight:600}}>{atr?"⚠ ":""}🔧 {o.refacciones.filter(r=>r.recibida).length}/{o.refacciones.length}</span>; })()}{o.placa&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.placa}</span>}{o.tecnico&&<span style={{fontSize:10,background:BRAND.bg,color:BRAND.muted,borderRadius:5,padding:"2px 7px"}}>{o.tecnico}</span>}{o.costo>0&&<span style={{fontSize:10,background:BRAND.green+"11",color:BRAND.green,border:"0.5px solid "+BRAND.green+"33",borderRadius:5,padding:"2px 7px"}}>${o.costo.toLocaleString("es-MX")}</span>}{o.siniestro&&<span style={{fontSize:10,background:BRAND.blue+"11",color:BRAND.blue,border:"0.5px solid "+BRAND.blue+"33",borderRadius:5,padding:"2px 7px"}}>{o.siniestro}</span>}</div>
       <div style={{display:"flex",gap:2}}>{PASOS.map((p,j)=><div key={p} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}><div style={{height:3,width:"100%",borderRadius:2,background:j<idx?BRAND.accent:j===idx?BRAND.accent+"55":BRAND.dimmed}} /><span style={{fontSize:8,color:j===idx?BRAND.accent:j<idx?BRAND.muted:BRAND.dimmed,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%",textAlign:"center"}}>{ESTADOS[j].label.split(" ")[0]}</span></div>)}</div>
     </div>
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REVISIÓN DE PUNTOS DE CORTESÍA
+// · Checklist de ingreso con semáforo (verde, amarillo, rojo) en la pestaña 🔍 Revisión de la orden.
+// · Vive en la tabla revisiones (ver migracion_revisiones.sql), una por orden, y NO se borra
+//   cuando la orden se depura: es el historial del vehículo, que se busca por placa o VIN.
+// · Lo amarillo y lo rojo se convierte en servicios sugeridos, con precio y la respuesta del cliente.
+// · Reporte gráfico para el cliente: impreso o en PDF, y como enlace que se manda por WhatsApp.
+// · Formato en blanco para llenar a mano (botón en el Dashboard y en la pestaña).
+// ═══════════════════════════════════════════════════════════════════════════
+const INICIO_REVISIONES = "2026-10-23";   // las órdenes que entraron desde este día muestran «Revisión pendiente»…
+const DIAS_RECORDATORIO_REV = 90;         // …durante sus primeros 90 días
+const DIAS_INDICE_REV = 120;              // revisiones que se cargan al abrir la app (tablero y avisos)
+const DIAS_VIGENCIA_ENLACE = 180;         // el enlace para el cliente funciona 180 días
+
+// Semáforo. "texto": color de letra sobre blanco · "tinta": color de la palomita sobre el color lleno.
+const SEM = {
+  v:  { label:"En buen estado",                  corto:"Bien",      color:"#1E9E57", fondo:"#E7F6EE", texto:"#12683A", tinta:"#FFFFFF" },
+  a:  { label:"Requiere pronta intervención",    corto:"Pronto",    color:"#EFA700", fondo:"#FFF4D6", texto:"#7A5200", tinta:"#1D2733" },
+  r:  { label:"Requiere intervención inmediata", corto:"Inmediato", color:"#D83A34", fondo:"#FDE9E8", texto:"#A3231E", tinta:"#FFFFFF" },
+  na: { label:"No aplica",                       corto:"N/A",       color:"#9AA6B6", fondo:"#F1F4F8", texto:"#5A6B7F", tinta:"#FFFFFF" },
+};
+const SEM_VACIO = { color:"#C8D2E0", fondo:"#F3F6F9", texto:"#5A6B7F", tinta:"#5A6B7F" };
+const PESO_SEM = { v:1, a:2, r:3 };
+const peorEstado = lista => lista.reduce((m, e) => ((PESO_SEM[e] || 0) > (PESO_SEM[m] || 0) ? e : m), "");
+
+const RUEDAS = [
+  { k:"di", l:"Delantera izquierda", c:"Del. izq.",  llanta:"Llanta delantera izquierda", freno:"Balatas delanteras izquierdas" },
+  { k:"dd", l:"Delantera derecha",   c:"Del. der.",  llanta:"Llanta delantera derecha",   freno:"Balatas delanteras derechas" },
+  { k:"ti", l:"Trasera izquierda",   c:"Tras. izq.", llanta:"Llanta trasera izquierda",   freno:"Balatas traseras izquierdas" },
+  { k:"td", l:"Trasera derecha",     c:"Tras. der.", llanta:"Llanta trasera derecha",     freno:"Balatas traseras derechas" },
+];
+const PISADA  = { v:"6.5 mm o más", a:"5.55 a 3.175 mm", r:"2.38 mm o menos" };
+const BALATAS = { v:"80% o más", a:"50%", r:"20% o menos" };
+const NIVELES = { v:"OK, buen nivel", r:"Requiere atención" };
+
+// Los puntos del formato, en el orden en que se recorre el vehículo
+const REV_SECCIONES = [
+  { k:"suspension", t:"Suspensión y aire acondicionado", items:[
+    { k:"amort_del", l:"Amortiguadores delanteros", z:"eje_del" },
+    { k:"amort_tra", l:"Amortiguadores traseros",   z:"eje_tra" },
+    { k:"rotulas",   l:"Rótulas de suspensión",     z:"eje_del" },
+    { k:"aire",      l:"Aire acondicionado",        z:"cabina" },
+  ]},
+  { k:"limpiadores", t:"Limpiadores", items:[
+    { k:"pluma_izq",    l:"Pluma izquierda", z:"parabrisas" },
+    { k:"pluma_der",    l:"Pluma derecha",   z:"parabrisas" },
+    { k:"pluma_tra",    l:"Pluma trasera",   z:"medallon", opc:true },
+    { k:"desempanador", l:"Desempañador",    z:"medallon", opc:true },
+  ]},
+  { k:"ruedas", t:"Llantas y frenos", tipo:"ruedas", items:[
+    { k:"frenado", l:"Sistema de frenado (general)", z:"frenos" },
+  ]},
+  { k:"bateria", t:"Batería", items:[
+    { k:"bateria", l:"Condición de la batería", z:"bateria" },
+  ]},
+  { k:"niveles", t:"Niveles", tipo:"niveles", items:[
+    { k:"niv_aceite",    l:"Aceite del motor",                z:"motor" },
+    { k:"niv_frenos",    l:"Líquido de frenos",               z:"motor" },
+    { k:"niv_trans",     l:"Transmisión (si tiene bayoneta)", z:"motor", opc:true },
+    { k:"niv_anticong",  l:"Anticongelante",                  z:"motor" },
+    { k:"niv_direccion", l:"Dirección asistida",              z:"motor", opc:true },
+    { k:"niv_lava",      l:"Lavaparabrisas",                  z:"motor" },
+  ]},
+  { k:"general", t:"Revisión general", items:[
+    { k:"claxon",       l:"Claxon",                                         z:"cabina" },
+    { k:"electrico",    l:"Sistema eléctrico",                              z:"cabina" },
+    { k:"faros",        l:"Faros y luces",                                  z:"faros" },
+    { k:"motor",        l:"Motor, transmisión, ejes y caja de velocidades", z:"motor" },
+    { k:"enfriamiento", l:"Sistema de enfriamiento del motor",              z:"motor" },
+    { k:"cinturones",   l:"Cinturones de seguridad y bolsas de aire",       z:"cabina", grupo:"Inspección visual" },
+    { k:"mangueras",    l:"Mangueras (motor, dirección asistida…)",         z:"motor" },
+    { k:"filtros",      l:"Filtro de aire y de aire acondicionado",         z:"motor" },
+    { k:"dir_comp",     l:"Componentes de dirección y acoplamiento",        z:"eje_del" },
+    { k:"escape",       l:"Sistema de escape",                              z:"escape" },
+    { k:"susp_del",     l:"Suspensión delantera",                           z:"eje_del" },
+    { k:"susp_tra",     l:"Suspensión trasera",                             z:"eje_tra" },
+    { k:"direccion",    l:"Dirección",                                      z:"eje_del" },
+    { k:"bandas",       l:"Bandas motrices",                                z:"motor" },
+  ]},
+];
+// Todos los puntos con semáforo (llantas y balatas incluidas), para contar y para el diagrama
+const REV_ITEMS = (() => {
+  const lista = [];
+  REV_SECCIONES.forEach(s => {
+    if (s.tipo === "ruedas") {
+      RUEDAS.forEach(r => lista.push({ k:"llanta_" + r.k, l:r.llanta, z:"rueda_" + r.k, tipo:"llanta", s:s.k, rueda:r.k }));
+      RUEDAS.forEach(r => lista.push({ k:"freno_" + r.k, l:r.freno, z:"rueda_" + r.k, tipo:"freno", s:s.k, rueda:r.k }));
+    }
+    s.items.forEach(it => lista.push({ ...it, tipo: s.tipo === "niveles" ? "nivel" : "sem", s: s.k }));
+  });
+  return lista;
+})();
+const valorPunto = (datos, k) => { const v = datos && datos["p." + k]; return v === "v" || v === "a" || v === "r" || v === "na" ? v : ""; };
+const descripcionValor = (it, v) => ((it.tipo === "llanta" ? PISADA : it.tipo === "freno" ? BALATAS : it.tipo === "nivel" ? NIVELES : {})[v]) || (SEM[v] || {}).label || "";
+
+const INVENTARIO = [
+  { k:"limpiadores", l:"Limpiadores" }, { k:"espejos", l:"Espejos laterales" }, { k:"tapones", l:"Tapones de rueda" },
+  { k:"tapon_gas", l:"Tapón de gasolina" }, { k:"birlos", l:"Birlos" }, { k:"radio", l:"Radio / estéreo" },
+  { k:"retrovisor", l:"Espejo retrovisor" }, { k:"cinturones", l:"Cinturones de seguridad" }, { k:"manijas", l:"Manijas y controles interiores" },
+  { k:"cables", l:"Cables pasacorriente" }, { k:"refaccion", l:"Llanta de refacción" }, { k:"luces", l:"Unidades de luces" },
+  { k:"antena", l:"Antena" }, { k:"cristales", l:"Cristales" }, { k:"molduras", l:"Molduras completas" },
+  { k:"claxon", l:"Claxon" }, { k:"tablero", l:"Instrumentos del tablero" }, { k:"encendedor", l:"Encendedor" },
+  { k:"ceniceros", l:"Ceniceros" }, { k:"tapetes", l:"Tapetes" }, { k:"gato", l:"Gato" }, { k:"senales", l:"Señales (triángulos)" },
+];
+const COMBUSTIBLE = [{ k:"reserva", l:"Reserva" }, { k:"1/4", l:"¼" }, { k:"1/2", l:"½" }, { k:"3/4", l:"¾" }, { k:"lleno", l:"Lleno" }];
+const CHECKS_RUEDAS = [{ k:"x.rotacion", l:"Necesita rotación" }, { k:"x.alineacion", l:"Necesita alineación" }, { k:"x.balanceo", l:"Necesita balanceo" }];
+
+// Zonas del diagrama (cada punto pinta su zona con el peor estado)
+const ZONAS_AUTO = {
+  faros:"Faros y luces", motor:"Motor y niveles", bateria:"Batería", parabrisas:"Limpiadores", cabina:"Interior y sistema eléctrico",
+  medallon:"Medallón y desempañador", eje_del:"Suspensión y dirección delantera", eje_tra:"Suspensión trasera", escape:"Escape", frenos:"Frenos",
+};
+const estadoZona = (datos, z) => peorEstado(REV_ITEMS.filter(it => it.z === z).map(it => valorPunto(datos, it.k)));
+const seccionDeZona = z => (z.indexOf("rueda_") === 0 || z === "frenos") ? "ruedas" : ((REV_ITEMS.find(it => it.z === z) || {}).s || "general");
+
+// ─── Servicios sugeridos: salen solos de lo amarillo y lo rojo ────────────────
+const REV_SUGERENCIAS = [
+  { k:"balatas_del",  t:"Cambio de balatas delanteras",          items:["freno_di", "freno_dd"] },
+  { k:"balatas_tra",  t:"Cambio de balatas traseras",            items:["freno_ti", "freno_td"] },
+  { k:"frenos",       t:"Revisión del sistema de frenos",        items:["frenado"] },
+  { k:"llantas",      t:"Cambio de llantas",                     items:["llanta_di", "llanta_dd", "llanta_ti", "llanta_td"], cuenta:true },
+  { k:"rotacion",     t:"Rotación de llantas",                   check:"x.rotacion" },
+  { k:"alineacion",   t:"Alineación",                            check:"x.alineacion" },
+  { k:"balanceo",     t:"Balanceo",                              check:"x.balanceo" },
+  { k:"amort_del",    t:"Cambio de amortiguadores delanteros",   items:["amort_del"] },
+  { k:"amort_tra",    t:"Cambio de amortiguadores traseros",     items:["amort_tra"] },
+  { k:"suspension",   t:"Servicio de suspensión",                items:["rotulas", "susp_del", "susp_tra"] },
+  { k:"direccion",    t:"Revisión de la dirección",              items:["dir_comp", "direccion"] },
+  { k:"aire",         t:"Servicio de aire acondicionado",        items:["aire"] },
+  { k:"plumas",       t:"Cambio de plumas limpiaparabrisas",     items:["pluma_izq", "pluma_der", "pluma_tra"] },
+  { k:"desempanador", t:"Reparación del desempañador",           items:["desempanador"] },
+  { k:"bateria",      t:"Cambio de batería",                     items:["bateria"], tPronto:"Revisión de batería y sistema de carga" },
+  { k:"aceite",       t:"Cambio de aceite y filtro",             items:["niv_aceite"] },
+  { k:"liq_frenos",   t:"Cambio de líquido de frenos",           items:["niv_frenos"] },
+  { k:"transmision",  t:"Servicio de transmisión",               items:["niv_trans"] },
+  { k:"enfriamiento", t:"Servicio de anticongelante y enfriamiento", items:["niv_anticong", "enfriamiento"] },
+  { k:"dir_hid",      t:"Servicio de dirección hidráulica",      items:["niv_direccion"] },
+  { k:"lava",         t:"Relleno de lavaparabrisas",             items:["niv_lava"] },
+  { k:"claxon",       t:"Reparación del claxon",                 items:["claxon"] },
+  { k:"electrico",    t:"Diagnóstico del sistema eléctrico",     items:["electrico"] },
+  { k:"faros",        t:"Ajuste o cambio de faros y luces",      items:["faros"] },
+  { k:"motor",        t:"Diagnóstico de motor y transmisión",    items:["motor"] },
+  { k:"cinturones",   t:"Revisión de cinturones y bolsas de aire", items:["cinturones"] },
+  { k:"mangueras",    t:"Cambio de mangueras",                   items:["mangueras"] },
+  { k:"filtros",      t:"Cambio de filtro de aire y de cabina",  items:["filtros"] },
+  { k:"escape",       t:"Reparación del sistema de escape",      items:["escape"] },
+  { k:"bandas",       t:"Cambio de bandas",                      items:["bandas"] },
+];
+const URGENCIAS = { inmediata:{ l:"Inmediata", sem:"r" }, pronto:{ l:"Pronto", sem:"a" } };
+const DECISIONES = [
+  { k:"aceptada",  l:"Acepta",  icono:"✓", texto:"#12683A", fondo:"#E7F6EE", borde:"#1E9E57", bitacora:"El cliente aceptó" },
+  { k:"despues",   l:"Después", icono:"⏳", texto:"#7A5200", fondo:"#FFF4D6", borde:"#EFA700", bitacora:"El cliente lo dejó para después" },
+  { k:"rechazada", l:"No",      icono:"✕", texto:"#5A6B7F", fondo:"#EEF2F6", borde:"#9AA6B6", bitacora:"El cliente no aceptó" },
+];
+const sugerenciasDe = datos => {
+  datos = datos || {};
+  const lista = [];
+  REV_SUGERENCIAS.forEach((s, i) => {
+    let urg = "", n = 0;
+    if (s.check) { if (datos[s.check]) urg = "pronto"; }
+    else s.items.forEach(k => { const v = valorPunto(datos, k); if (v === "r") { urg = "inmediata"; n++; } else if (v === "a") { if (!urg) urg = "pronto"; n++; } });
+    if (!urg) return;
+    let texto = s.t;
+    if (s.cuenta) texto = n >= 4 ? "Cambio de las 4 llantas" : n > 1 ? `Cambio de ${n} llantas` : "Cambio de 1 llanta";
+    if (urg === "pronto" && s.tPronto) texto = s.tPronto;
+    lista.push({ k:s.k, texto, urg, auto:true, orden:i });
+  });
+  Object.keys(datos).filter(k => k.indexOf("m.") === 0).forEach(k => {
+    const m = datos[k];
+    if (!m || typeof m !== "object" || !String(m.texto || "").trim()) return;
+    lista.push({ k:"m_" + k.slice(2), texto:String(m.texto).trim(), urg: m.urg === "inmediata" ? "inmediata" : "pronto", auto:false, orden:1000 + (Number(m.n) || 0) });
+  });
+  lista.forEach(s => {
+    const d = datos["s." + s.k];
+    s.decision = DECISIONES.some(x => x.k === d) ? d : "";
+    s.precio = Math.max(0, parseFloat(datos["$." + s.k]) || 0);
+  });
+  return lista.sort((a, b) => (a.urg === b.urg ? 0 : a.urg === "inmediata" ? -1 : 1) || a.orden - b.orden);
+};
+const dinero = n => "$" + (Number(n) || 0).toLocaleString("es-MX", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+// Lo que se encontró (rojo primero) y el resumen que se guarda con cada revisión
+const hallazgosDe = datos => REV_ITEMS
+  .map(it => ({ it, v: valorPunto(datos, it.k) }))
+  .filter(x => x.v === "r" || x.v === "a")
+  .sort((x, y) => PESO_SEM[y.v] - PESO_SEM[x.v]);
+const notaPunto = (datos, k) => String((datos && datos["n." + k]) || "").trim();
+const textoHallazgo = (it, v, datos) => {
+  const det = it.tipo === "llanta" || it.tipo === "freno" ? descripcionValor(it, v) : it.tipo === "nivel" ? "requiere atención" : "";
+  const nota = notaPunto(datos, it.k);
+  return it.l + (det ? ": " + det : "") + (nota ? " — " + nota : "");
+};
+const resumenRevision = datos => {
+  datos = datos || {};
+  const c = { v:0, a:0, r:0, na:0, sin:0, total:0 };
+  REV_ITEMS.forEach(it => { const v = valorPunto(datos, it.k); if (v === "na") { c.na++; return; } c.total++; if (v) c[v]++; else c.sin++; });
+  const sugs = sugerenciasDe(datos);
+  return { ...c, revisados: c.v + c.a + c.r,
+    sug: sugs.length,
+    acep: sugs.filter(s => s.decision === "aceptada").length,
+    desp: sugs.filter(s => s.decision === "despues").length,
+    rech: sugs.filter(s => s.decision === "rechazada").length,
+    monto: Math.round(sugs.filter(s => s.decision === "aceptada").reduce((t, s) => t + s.precio, 0) * 100) / 100,
+    pend: sugs.filter(s => s.decision !== "aceptada" && s.decision !== "rechazada").slice(0, 6).map(s => s.texto.slice(0, 120)),
+    hall: hallazgosDe(datos).slice(0, 6).map(x => ({ v: x.v, t: textoHallazgo(x.it, x.v, datos).slice(0, 160) })) };
+};
+// Qué cambió entre dos visitas (lo que empeoró primero)
+const cambiosEntreVisitas = (antes, ahora) => REV_ITEMS
+  .map(it => ({ it, a: valorPunto(antes, it.k), b: valorPunto(ahora, it.k) }))
+  .filter(x => PESO_SEM[x.a] && PESO_SEM[x.b] && x.a !== x.b)
+  .map(x => ({ ...x, mejora: PESO_SEM[x.b] < PESO_SEM[x.a] }))
+  .sort((x, y) => (x.mejora === y.mejora ? PESO_SEM[y.b] - PESO_SEM[x.b] : x.mejora ? 1 : -1));
+// ¿«a» fue antes que «b»? Con la misma fecha, la que se creó primero (una revisión sin guardar va al final)
+const revisionAnterior = (a, b) => a.fecha < b.fecha || (a.fecha === b.fecha && (a.creadoEn || "~") < (b.creadoEn || "~"));
+const necesitaRevision = o => {
+  const f = fechaAlta(o);
+  if (!f || f < INICIO_REVISIONES) return false;
+  const d = difDias(f, hoyLocal());
+  return d !== null && d <= DIAS_RECORDATORIO_REV;
+};
+
+// ─── Identificadores y conversión con la base ────────────────────────────────
+const claveVehiculo = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const recortarTexto = (s, n) => String(s == null ? "" : s).slice(0, n);
+const kmValido = km => { const n = parseInt(String(km == null ? "" : km).replace(/\D/g, ""), 10); return Number.isFinite(n) && n >= 0 && n <= 3000000 ? n : null; };
+const idAleatorio = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16); crypto.getRandomValues(b); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+// Clave del enlace para el cliente: 24 bytes al azar (imposible de adivinar)
+const claveEnlace = () => { const b = new Uint8Array(24); crypto.getRandomValues(b); return btoa(String.fromCharCode.apply(null, b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+const urlReporte = clave => window.location.origin + "/?reporte=" + clave;
+const enlaceRevVigente = r => !!(r && r.enlace && (!r.enlaceVence || r.enlaceVence >= hoyLocal()));
+
+const COLS_REV = ["orden_id", "fecha", "vehiculo", "placa", "serie", "color", "cliente", "km", "tecnico", "asesor", "estado", "proxima_cita", "datos", "resumen", "enlace", "enlace_vence"];
+const objetoPlano = v => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+const dbToRev = row => ({
+  id: row.id, tallerId: row.taller_id || "", ordenId: row.orden_id || "", fecha: row.fecha || "",
+  vehiculo: row.vehiculo || "", placa: row.placa || "", serie: row.serie || "", color: row.color || "", cliente: row.cliente || "",
+  km: row.km === null || row.km === undefined || row.km === "" ? null : Number(row.km),
+  tecnico: row.tecnico || "", asesor: row.asesor || "", estado: row.estado === "terminada" ? "terminada" : "borrador",
+  proximaCita: row.proxima_cita || "", datos: objetoPlano(row.datos), resumen: objetoPlano(row.resumen),
+  enlace: row.enlace || "", enlaceVence: row.enlace_vence || "",
+  version: row.version || 0, creadoEn: row.creado_en || "", actualizadoEn: row.actualizado_en || "",
+  placaClave: row.placa_clave != null ? row.placa_clave : claveVehiculo(row.placa),
+  serieClave: row.serie_clave != null ? row.serie_clave : claveVehiculo(row.serie),
+});
+const revToDB = (r, tallerId) => {
+  const datos = objetoPlano(r.datos);
+  return {
+    id: r.id, taller_id: r.tallerId || tallerId, orden_id: r.ordenId || null, fecha: r.fecha || hoy(),
+    vehiculo: recortarTexto(r.vehiculo, 300), placa: recortarTexto(r.placa, 30), serie: recortarTexto(r.serie, 40), color: recortarTexto(r.color, 80),
+    cliente: recortarTexto(r.cliente, 300), km: kmValido(r.km), tecnico: recortarTexto(r.tecnico, 150), asesor: recortarTexto(r.asesor, 150),
+    estado: r.estado === "terminada" ? "terminada" : "borrador", proxima_cita: r.proximaCita || null,
+    datos, resumen: resumenRevision(datos), enlace: r.enlace || null, enlace_vence: r.enlace ? (r.enlaceVence || null) : null,
+  };
+};
+const filaBaseRev = (row, tallerId) => revToDB(dbToRev(row), row.taller_id || tallerId);
+// Dos personas editando la misma revisión: cada punto que cambié yo se queda como lo dejé;
+// lo demás, como lo dejó la otra persona.
+const fusionarRev = (base, local, remota) => {
+  base = base || {};
+  const fila = { ...remota };
+  COLS_REV.forEach(c => { if (c !== "datos" && c !== "resumen" && !igual(local[c], base[c])) fila[c] = local[c]; });
+  const bd = objetoPlano(base.datos), ld = objetoPlano(local.datos), rd = { ...objetoPlano(remota.datos) };
+  new Set([...Object.keys(bd), ...Object.keys(ld)]).forEach(k => {
+    if (igual(ld[k], bd[k])) return;
+    if (ld[k] === undefined) delete rd[k]; else rd[k] = ld[k];
+  });
+  fila.datos = rd;
+  fila.resumen = resumenRevision(rd);
+  return fila;
+};
+const diferenciasRev = (base, fila) => {
+  const cambios = {};
+  COLS_REV.forEach(c => { if (!igual(fila[c], base ? base[c] : undefined)) cambios[c] = fila[c]; });
+  return cambios;
+};
+
+// ─── Servidor (Supabase) ──────────────────────────────────────────────────────
+const SELECT_LIGERO_REV = "id,taller_id,orden_id,fecha,km,vehiculo,placa,serie,color,cliente,tecnico,asesor,estado,proxima_cita,resumen,version,creado_en,actualizado_en,placa_clave,serie_clave";
+const urlRev = consulta => SUPA_URL + "/rest/v1/revisiones?" + consulta;
+const cabRev = (token, extra) => ({ ...supaHeaders, "Authorization": "Bearer " + token, ...(extra || {}) });
+const pedirRev = async (url, opciones, que) => {
+  let r;
+  try { r = await fetch(url, { signal: limiteDeTiempo(20000), ...opciones }); }
+  catch (_) { const e = new Error("Sin conexión al " + que); e.codigo = "RED"; throw e; }
+  if (!r.ok) {
+    let msg = ""; try { msg = await r.text(); } catch (_) {}
+    const e = new Error(`Error ${r.status} al ${que}` + (msg ? ": " + msg.slice(0, 200) : ""));
+    e.status = r.status;
+    e.codigo = r.status === 404 ? "SIN_TABLA" : r.status === 403 ? "SIN_PERMISO" : r.status === 409 ? "EXISTE" : r.status === 401 ? "SIN_SESION" : "SERVIDOR";
+    throw e;
+  }
+  if (r.status === 204) return null;
+  return r.json().catch(() => null);
+};
+const primeraFila = d => (Array.isArray(d) && d.length ? d[0] : null);
+const revServidor = {
+  indice: (t, desde) => pedirRev(urlRev(`select=${SELECT_LIGERO_REV}&fecha=gte.${desde}&order=fecha.desc,creado_en.desc&limit=3000`), { headers: cabRev(t) }, "cargar las revisiones"),
+  desde: (t, iso) => pedirRev(urlRev(`select=*&actualizado_en=gt.${encodeURIComponent(iso)}&order=actualizado_en.asc&limit=500`), { headers: cabRev(t) }, "actualizar las revisiones"),
+  deOrden: async (t, taller, ordenId) => primeraFila(await pedirRev(urlRev(`select=*&taller_id=eq.${encodeURIComponent(taller)}&orden_id=eq.${encodeURIComponent(ordenId)}&limit=1`), { headers: cabRev(t) }, "leer la revisión")),
+  leer: async (t, id) => primeraFila(await pedirRev(urlRev(`select=*&id=eq.${encodeURIComponent(id)}`), { headers: cabRev(t) }, "leer la revisión")),
+  vehiculo: (t, pc, sc) => {
+    const filtro = pc && sc ? `or=(placa_clave.eq.${pc},serie_clave.eq.${sc})` : pc ? `placa_clave=eq.${pc}` : `serie_clave=eq.${sc}`;
+    return pedirRev(urlRev(`select=*&${filtro}&order=fecha.desc,creado_en.desc&limit=30`), { headers: cabRev(t) }, "buscar el historial del vehículo");
+  },
+  insertar: async (t, fila) => primeraFila(await pedirRev(urlRev("select=version,creado_en,actualizado_en"), { method:"POST", headers: cabRev(t, { "Prefer":"return=representation" }), body: JSON.stringify(fila) }, "guardar la revisión")),
+  // Solo se guarda si la revisión sigue en la versión que conocemos; si otra persona guardó antes, regresa null
+  actualizar: async (t, id, version, cambios) => primeraFila(await pedirRev(urlRev(`id=eq.${encodeURIComponent(id)}&version=eq.${version}&select=version,actualizado_en`), { method:"PATCH", headers: cabRev(t, { "Prefer":"return=representation" }), body: JSON.stringify(cambios) }, "guardar la revisión")),
+  borrar: async (t, id) => { const d = await pedirRev(urlRev(`id=eq.${encodeURIComponent(id)}&select=id`), { method:"DELETE", headers: cabRev(t, { "Prefer":"return=representation" }) }, "borrar la revisión"); return Array.isArray(d) ? d.length : 0; },
+};
+// Página pública del cliente: sin sesión, solo con la clave del enlace
+const pedirReportePublico = async clave => {
+  let r;
+  try { r = await fetch(SUPA_URL + "/rest/v1/rpc/reporte_publico", { method:"POST", headers: supaHeaders, body: JSON.stringify({ p_clave: clave }), signal: limiteDeTiempo(20000) }); }
+  catch (_) { const e = new Error("Sin conexión"); e.codigo = "RED"; throw e; }
+  if (r.status === 404) return null;
+  if (!r.ok) { const e = new Error("Error " + r.status); e.codigo = "SERVIDOR"; throw e; }
+  return r.json().catch(() => null);
+};
+
+// Modo demostración: las revisiones viven en memoria con las mismas reglas que la base
+let _servidorDemoRev = null;
+const servidorDemoRev = () => {
+  if (_servidorDemoRev) return _servidorDemoRev;
+  const filas = new Map(); let reloj = Date.now();
+  const sello = () => new Date(++reloj).toISOString();
+  const copia = x => JSON.parse(JSON.stringify(x));
+  const conClaves = f => ({ ...f, placa_clave: claveVehiculo(f.placa), serie_clave: claveVehiculo(f.serie) });
+  const ordenar = l => l.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || String(b.creado_en).localeCompare(String(a.creado_en)));
+  const yaExiste = () => { const e = new Error("Ya existe"); e.codigo = "EXISTE"; return e; };
+  _servidorDemoRev = {
+    indice: async () => ordenar([...filas.values()].map(copia)),
+    desde: async (t, iso) => [...filas.values()].filter(f => f.actualizado_en > iso).map(copia),
+    deOrden: async (t, taller, ordenId) => { const f = [...filas.values()].find(x => x.orden_id === ordenId); return f ? copia(f) : null; },
+    leer: async (t, id) => (filas.has(id) ? copia(filas.get(id)) : null),
+    vehiculo: async (t, pc, sc) => ordenar([...filas.values()].filter(f => (pc && f.placa_clave === pc) || (sc && f.serie_clave === sc)).map(copia)),
+    insertar: async (t, fila) => {
+      if (filas.has(fila.id) || (fila.orden_id && [...filas.values()].some(x => x.orden_id === fila.orden_id))) throw yaExiste();
+      const ts = sello();
+      filas.set(fila.id, conClaves({ ...copia(fila), version:1, creado_en:ts, actualizado_en:ts }));
+      return { version:1, creado_en:ts, actualizado_en:ts };
+    },
+    actualizar: async (t, id, version, cambios) => {
+      const f = filas.get(id);
+      if (!f || f.version !== version) return null;
+      const ts = sello(), n = conClaves({ ...f, ...copia(cambios), version: f.version + 1, actualizado_en: ts });
+      filas.set(id, n);
+      return { version: n.version, actualizado_en: ts };
+    },
+    borrar: async (t, id) => (filas.delete(id) ? 1 : 0),
+    renombrar: (viejo, nuevo) => { filas.forEach(f => { if (f.orden_id === viejo) { f.orden_id = nuevo; f.version++; f.actualizado_en = sello(); } }); },
+  };
+  return _servidorDemoRev;
+};
+
+// ─── Estado de las revisiones en la app ───────────────────────────────────────
+// Guarda cada cambio (espera 0.9 s para agrupar toques), uno a la vez por revisión, con número de
+// versión: si otra persona guardó antes, se descarga su versión y se combinan ambas.
+// Vive en App, así que lo pendiente se guarda aunque el usuario cambie de pestaña o de sección.
+function useRevisiones(usuario, clave, avisos) {
+  const [, setTick] = useState(0);
+  const nuevoEstado = c => ({ clave: c, tabla: "desconocida", indice: {}, completas: {}, porOrden: {}, sync: {}, guardado: {}, timers: {}, cola: {}, reintentos: {}, cursor: null, vehiculos: {} });
+  const st = useRef(null);
+  if (!st.current) st.current = nuevoEstado(clave);
+  if (st.current.clave !== clave) {          // cambió la cuenta o el taller: se empieza de cero
+    Object.values(st.current.timers).forEach(clearTimeout);
+    st.current = nuevoEstado(clave);
+  }
+  const usuarioRef = useRef(usuario); usuarioRef.current = usuario;
+  const avisosRef = useRef(avisos); avisosRef.current = avisos;
+  const avisar = () => setTick(t => (t + 1) % 1000000000);
+  const api = () => (usuarioRef.current && usuarioRef.current.modoDemo ? servidorDemoRev() : revServidor);
+  const token = () => (usuarioRef.current && usuarioRef.current.token) || "";
+  const taller = () => (usuarioRef.current && usuarioRef.current.taller) || "";
+  const puedeEditar = () => puedePerm(usuarioRef.current, "editar_ordenes");
+
+  const ponerEnIndice = r => {
+    const s = st.current;
+    const ligera = { ...r }; delete ligera.datos;   // el índice no guarda los puntos (solo el resumen)
+    s.indice[r.id] = ligera;
+    Object.keys(s.porOrden).forEach(o => { if (s.porOrden[o] === r.id && o !== r.ordenId) delete s.porOrden[o]; });
+    if (r.ordenId) s.porOrden[r.ordenId] = r.id;
+  };
+  const avanzarCursor = ts => { const s = st.current; if (ts && (!s.cursor || Date.parse(ts) > Date.parse(s.cursor))) s.cursor = ts; };
+  const hayPendiente = id => { const s = st.current; return !!(s.timers[id] || s.cola[id]); };
+
+  // Una revisión que cambió otra persona: se integra si aquí no hay cambios sin guardar
+  const incorporar = row => {
+    const s = st.current, r = dbToRev(row), e = s.sync[r.id];
+    if (e && (row.version || 1) <= e.version) return false;
+    if (s.completas[r.id]) {
+      if (hayPendiente(r.id)) return false;
+      if (e && !igual(revToDB(s.completas[r.id], taller()), e.base)) return false;
+      s.completas[r.id] = r;
+      s.sync[r.id] = { base: filaBaseRev(row, taller()), version: row.version || 1 };
+      s.guardado[r.id] = "guardado";
+    }
+    ponerEnIndice(r);
+    return true;
+  };
+
+  // Al entrar: las revisiones recientes del taller (para el tablero y los avisos de las órdenes)
+  useEffect(() => {
+    if (!clave) return;
+    let vivo = true, reintento = null, intentos = 0;
+    const cargar = async () => {
+      try {
+        const filas = await api().indice(token(), sumarDias(hoyLocal(), -DIAS_INDICE_REV));
+        if (!vivo || st.current.clave !== clave) return;
+        const s = st.current;
+        (Array.isArray(filas) ? filas : []).forEach(f => { if (!s.completas[f.id]) ponerEnIndice(dbToRev(f)); avanzarCursor(f.actualizado_en); });
+        if (!s.cursor) s.cursor = new Date(Date.now() - 60000).toISOString();
+        s.tabla = "lista";
+        avisar();
+      } catch (e) {
+        if (!vivo) return;
+        if (e.codigo === "SIN_TABLA") { st.current.tabla = "sin_tabla"; avisar(); return; }
+        intentos++;
+        reintento = setTimeout(cargar, Math.min(60, 10 * intentos) * 1000);
+      }
+    };
+    cargar();
+    return () => { vivo = false; clearTimeout(reintento); };
+  }, [clave]);
+
+  // Cada minuto y al volver a la pestaña: lo que cambiaron otras personas
+  useEffect(() => {
+    if (!clave) return;
+    let vivo = true;
+    const refrescar = async () => {
+      const s = st.current;
+      if (s.tabla !== "lista" || document.hidden || !s.cursor) return;
+      try {
+        const filas = await api().desde(token(), new Date(Date.parse(s.cursor) - 10000).toISOString());
+        if (!vivo || st.current !== s || !Array.isArray(filas)) return;
+        let cambio = false;
+        filas.forEach(f => { avanzarCursor(f.actualizado_en); if (incorporar(f)) cambio = true; });
+        if (cambio) avisar();
+      } catch (_) {}
+    };
+    const iv = setInterval(refrescar, 60000);
+    const alVolver = () => { if (!document.hidden) refrescar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    window.addEventListener("focus", alVolver);
+    return () => { vivo = false; clearInterval(iv); document.removeEventListener("visibilitychange", alVolver); window.removeEventListener("focus", alVolver); };
+  }, [clave]);
+
+  const programar = (id, ms) => {
+    const s = st.current;
+    clearTimeout(s.timers[id]);
+    s.timers[id] = setTimeout(() => { if (st.current === s) { delete s.timers[id]; guardar(id); } }, ms);
+  };
+  const guardar = id => {
+    const s = st.current;
+    const tarea = (s.cola[id] || Promise.resolve()).catch(() => {}).then(() => guardarAhora(id, s));
+    s.cola[id] = tarea;
+    tarea.catch(() => {}).finally(() => { if (s.cola[id] === tarea) delete s.cola[id]; });
+    return tarea;
+  };
+  const guardarYa = id => { const s = st.current; clearTimeout(s.timers[id]); delete s.timers[id]; return guardar(id); };
+
+  // Otra persona ya había empezado la revisión de esta orden: lo que marqué aquí se suma a la suya
+  const adoptar = (miId, row) => {
+    const s = st.current;
+    const remota = filaBaseRev(row, taller()), mia = revToDB(s.completas[miId], taller());
+    const datos = { ...remota.datos, ...mia.datos };
+    const nueva = dbToRev({ ...row, datos, km: row.km != null ? row.km : mia.km, proxima_cita: row.proxima_cita || mia.proxima_cita });
+    clearTimeout(s.timers[miId]);
+    ["completas", "indice", "guardado", "timers", "reintentos"].forEach(m => { delete s[m][miId]; });
+    s.completas[row.id] = nueva;
+    s.sync[row.id] = { base: remota, version: row.version || 1 };
+    ponerEnIndice(nueva);
+    avisar();
+    return row.id;
+  };
+
+  const guardarAhora = async (idInicial, s) => {
+    let id = idInicial;
+    if (st.current !== s || !s.completas[id]) return;
+    s.guardado[id] = "guardando"; avisar();
+    try {
+      if (!s.sync[id]) {
+        const fila = revToDB(s.completas[id], taller());
+        try {
+          const res = await api().insertar(token(), fila);
+          if (st.current !== s) return;
+          s.sync[id] = { base: fila, version: (res && res.version) || 1 };
+          if (res) { s.completas[id] = { ...s.completas[id], version: res.version || 1, creadoEn: res.creado_en || "", actualizadoEn: res.actualizado_en || "" }; avanzarCursor(res.actualizado_en); }
+        } catch (e) {
+          if (e.codigo !== "EXISTE") throw e;
+          // Ya existía: un intento anterior sí llegó, u otra persona empezó la revisión de esta orden
+          let row = await api().leer(token(), id);
+          if (st.current !== s) return;
+          if (row) s.sync[id] = { base: filaBaseRev(row, taller()), version: row.version || 1 };
+          else if (s.completas[id].ordenId) {
+            row = await api().deOrden(token(), s.completas[id].tallerId || taller(), s.completas[id].ordenId);
+            if (st.current !== s) return;
+            if (row) id = adoptar(id, row);
+          }
+          if (!row) throw e;
+        }
+      }
+      for (let intento = 0; intento < 6; intento++) {
+        const e = s.sync[id];
+        const local = revToDB(s.completas[id], taller());
+        const cambios = diferenciasRev(e.base, local);
+        if (!Object.keys(cambios).length) break;
+        const res = await api().actualizar(token(), id, e.version, cambios);
+        if (st.current !== s) return;
+        if (res) {
+          s.sync[id] = { base: local, version: res.version };
+          s.completas[id] = { ...s.completas[id], version: res.version, actualizadoEn: res.actualizado_en || s.completas[id].actualizadoEn };
+          avanzarCursor(res.actualizado_en);
+          continue;                                   // por si el usuario siguió marcando mientras se guardaba
+        }
+        // Otra persona guardó antes (o no hay permiso): se descarga su versión y se combinan
+        const row = await api().leer(token(), id);
+        if (st.current !== s) return;
+        if (!row) { const err = new Error("La revisión ya no existe"); err.codigo = "NO_EXISTE"; throw err; }
+        if ((row.version || 1) === e.version) { const err = new Error("Sin permiso"); err.codigo = "SIN_PERMISO"; throw err; }
+        const remota = filaBaseRev(row, taller());
+        const fusion = fusionarRev(e.base, revToDB(s.completas[id], taller()), remota);
+        s.sync[id] = { base: remota, version: row.version };
+        s.completas[id] = dbToRev({ ...row, ...fusion });
+        ponerEnIndice(s.completas[id]);
+        avanzarCursor(row.actualizado_en);
+        avisar();
+      }
+      s.reintentos[id] = 0;
+      s.guardado[id] = s.timers[id] ? "pendiente" : "guardado";
+      if (s.completas[id]) ponerEnIndice(s.completas[id]);
+      avisar();
+    } catch (e) {
+      if (st.current !== s) return;
+      console.error("Error al guardar la revisión:", e);
+      if (e.codigo === "SIN_TABLA") { s.tabla = "sin_tabla"; s.guardado[id] = "rechazado"; avisar(); return; }
+      if (e.codigo === "SIN_PERMISO") { s.guardado[id] = "rechazado"; avisosRef.current.error("No se guardó la revisión: tu usuario no tiene permiso para modificarla."); avisar(); return; }
+      if (e.codigo === "NO_EXISTE") { s.guardado[id] = "rechazado"; avisosRef.current.error("Esta revisión fue eliminada por otra persona. Recarga la página."); avisar(); return; }
+      s.guardado[id] = "error"; avisar();
+      const n = (s.reintentos[id] || 0) + 1; s.reintentos[id] = n;
+      if (!s.timers[id]) programar(id, Math.min(60000, 5000 * n));
+    }
+  };
+
+  // Al ocultar la pestaña o salir, se guarda en ese momento lo que estaba esperando
+  useEffect(() => {
+    const vaciar = () => { const s = st.current; Object.keys(s.timers).forEach(id => guardarYa(id)); };
+    const alCambiar = () => { if (document.hidden) vaciar(); };
+    const antesDeSalir = ev => {
+      const s = st.current;
+      vaciar();
+      const sinGuardar = Object.keys(s.cola).length > 0 || Object.values(s.guardado).some(g => g === "pendiente" || g === "guardando" || g === "error");
+      if (sinGuardar) { ev.preventDefault(); ev.returnValue = ""; }
+    };
+    document.addEventListener("visibilitychange", alCambiar);
+    window.addEventListener("pagehide", vaciar);
+    window.addEventListener("beforeunload", antesDeSalir);
+    return () => { document.removeEventListener("visibilitychange", alCambiar); window.removeEventListener("pagehide", vaciar); window.removeEventListener("beforeunload", antesDeSalir); };
+  }, []);
+
+  // Trae la revisión de una orden (si existe) para verla o editarla
+  const abrirDeOrden = async o => {
+    const s = st.current;
+    const id0 = s.porOrden[o.id];
+    if (id0 && s.completas[id0]) return id0;
+    if (s.tabla === "sin_tabla") return null;
+    try {
+      const row = await api().deOrden(token(), o.tallerId || taller(), o.id);
+      if (st.current !== s) return null;
+      s.tabla = "lista";
+      if (!row) { avisar(); return null; }
+      if (!s.completas[row.id]) {
+        s.completas[row.id] = dbToRev(row);
+        s.sync[row.id] = { base: filaBaseRev(row, taller()), version: row.version || 1 };
+        s.guardado[row.id] = "guardado";
+      }
+      ponerEnIndice(s.completas[row.id]);
+      avisar();
+      return row.id;
+    } catch (e) {
+      if (e.codigo === "SIN_TABLA") { s.tabla = "sin_tabla"; avisar(); return null; }
+      throw e;
+    }
+  };
+  // Empieza la revisión de una orden (se guarda en el primer cambio)
+  const crear = o => {
+    const s = st.current;
+    const id0 = s.porOrden[o.id];
+    if (id0 && s.completas[id0]) return id0;
+    const u = usuarioRef.current || {};
+    const r = { id: idAleatorio(), tallerId: o.tallerId || taller(), ordenId: o.id, fecha: hoy(), vehiculo: o.vehiculo || "", placa: o.placa || "",
+      serie: o.serie || "", color: o.color || "", cliente: o.cliente || "", km: null, tecnico: o.tecnico || "", asesor: u.nombre || "",
+      estado: "borrador", proximaCita: "", datos: {}, resumen: resumenRevision({}), enlace: "", enlaceVence: "", version: 0, creadoEn: "", actualizadoEn: "",
+      placaClave: claveVehiculo(o.placa), serieClave: claveVehiculo(o.serie) };
+    s.completas[r.id] = r;
+    s.guardado[r.id] = "pendiente";
+    ponerEnIndice(r);
+    avisar();
+    return r.id;
+  };
+  const cambiar = (id, fn) => {
+    if (!puedeEditar()) return false;
+    const s = st.current, actual = s.completas[id];
+    if (!actual) return false;
+    const nueva = fn(actual);
+    if (!nueva || nueva === actual) return false;
+    s.completas[id] = { ...nueva, resumen: resumenRevision(nueva.datos), placaClave: claveVehiculo(nueva.placa), serieClave: claveVehiculo(nueva.serie) };
+    ponerEnIndice(s.completas[id]);
+    s.guardado[id] = "pendiente";
+    programar(id, 900);
+    avisar();
+    return true;
+  };
+  const eliminar = async id => {
+    const s = st.current;
+    if (s.sync[id] || s.cola[id]) { await (s.cola[id] || Promise.resolve()).catch(() => {}); await api().borrar(token(), id); }
+    clearTimeout(s.timers[id]);
+    ["completas", "indice", "guardado", "timers", "reintentos", "sync"].forEach(m => { delete s[m][id]; });
+    Object.keys(s.porOrden).forEach(o => { if (s.porOrden[o] === id) delete s.porOrden[o]; });
+    Object.values(s.vehiculos).forEach(c => { c.lista = c.lista.filter(x => x.id !== id); });
+    avisar();
+  };
+  // Historial de un vehículo por placa o VIN (todas sus revisiones en el taller, la más reciente primero)
+  const historialVehiculo = async (placa, serie, forzar) => {
+    const pc = claveVehiculo(placa), sc = claveVehiculo(serie);
+    const usarP = pc.length >= 4 ? pc : "", usarS = sc.length >= 11 ? sc : "";
+    if (!usarP && !usarS) return [];
+    const s = st.current, k = usarP + "|" + usarS, c = s.vehiculos[k];
+    if (c && !forzar && Date.now() - c.t < 60000) return c.lista;
+    if (s.tabla === "sin_tabla") return [];
+    try {
+      const filas = await api().vehiculo(token(), usarP, usarS);
+      if (st.current !== s) return [];
+      const lista = (Array.isArray(filas) ? filas : []).map(dbToRev);
+      s.vehiculos[k] = { t: Date.now(), lista };
+      avisar();
+      return lista;
+    } catch (e) {
+      if (e.codigo === "SIN_TABLA") { s.tabla = "sin_tabla"; avisar(); }
+      return c ? c.lista : [];
+    }
+  };
+  const vehiculoEnCache = (placa, serie) => {
+    const pc = claveVehiculo(placa), sc = claveVehiculo(serie);
+    const c = st.current.vehiculos[(pc.length >= 4 ? pc : "") + "|" + (sc.length >= 11 ? sc : "")];
+    if (!c) return null;
+    return c.lista.map(r => st.current.completas[r.id] || r);   // lo que se editó aquí, al día
+  };
+  // Para las tarjetas de las órdenes: pendiente, en curso o lista (con cuántos rojos y amarillos)
+  const estadoDeOrden = o => {
+    const s = st.current;
+    if (s.tabla !== "lista" || !o) return null;
+    const id = s.porOrden[o.id];
+    const r = id && (s.completas[id] || s.indice[id]);
+    if (r) { const res = r.resumen || {}; return { tipo: r.estado === "terminada" ? "lista" : "curso", r: res.r || 0, a: res.a || 0, revisados: res.revisados || 0, total: res.total || REV_ITEMS.length }; }
+    return necesitaRevision(o) ? { tipo: "pendiente" } : null;
+  };
+  // El administrador cambió el número de la orden (la base ya movió la revisión: ver migración)
+  const alRenombrarOrden = (viejo, nuevo) => {
+    const s = st.current;
+    if (usuarioRef.current && usuarioRef.current.modoDemo) servidorDemoRev().renombrar(viejo, nuevo);
+    const id = s.porOrden[viejo];
+    if (!id) return;
+    if (s.completas[id]) s.completas[id] = { ...s.completas[id], ordenId: nuevo };
+    if (s.indice[id]) s.indice[id] = { ...s.indice[id], ordenId: nuevo };
+    if (s.sync[id]) s.sync[id] = { ...s.sync[id], base: { ...s.sync[id].base, orden_id: nuevo } };
+    delete s.porOrden[viejo]; s.porOrden[nuevo] = id;
+    avisar();
+  };
+
+  const s = st.current;
+  return {
+    tabla: s.tabla, esDemo: !!(usuario && usuario.modoDemo), puedeEditar: puedeEditar(),
+    idDeOrden: ordenId => st.current.porOrden[ordenId],
+    revision: id => (id && st.current.completas[id]) || null,
+    estadoGuardado: id => (id && st.current.guardado[id]) || "",
+    indice: () => Object.values(st.current.indice),
+    abrirDeOrden, crear, cambiar, guardarYa, eliminar, historialVehiculo, vehiculoEnCache, estadoDeOrden, alRenombrarOrden,
+  };
+}
+
+// ─── Piezas visuales: diagrama del vehículo, barra y botones de semáforo ─────
+const colorSem = e => (e && SEM[e] && e !== "na" ? SEM[e] : SEM_VACIO);
+const titularRevision = (res, paraCliente) => {
+  if (!res || !res.revisados) return { texto: paraCliente ? "Revisión en proceso" : "Revisión sin empezar", sem: "" };
+  if (res.r) return { texto: `${res.r} punto${res.r > 1 ? "s requieren" : " requiere"} atención inmediata`, sem: "r" };
+  if (res.a) return { texto: `${res.a} punto${res.a > 1 ? "s" : ""} para atender pronto`, sem: "a" };
+  if (res.sin) return { texto: `Todo bien hasta ahora · faltan ${res.sin} punto${res.sin > 1 ? "s" : ""}`, sem: "v" };
+  return { texto: paraCliente ? "Tu vehículo está en buen estado" : "Todo en buen estado", sem: "v" };
+};
+
+// Vista superior del vehículo (el frente arriba). Cada parte toma el color de su peor punto;
+// lo que no se ha revisado queda gris. Con onZona, tocar una parte lleva a esa sección.
+function DiagramaVehiculo({ datos, ancho = 180, onZona, etiquetas = true }) {
+  datos = datos || {};
+  const z = k => colorSem(estadoZona(datos, k));
+  const llanta = k => colorSem(valorPunto(datos, "llanta_" + k));
+  const freno = k => colorSem(valorPunto(datos, "freno_" + k) || valorPunto(datos, "frenado"));
+  const trazo = c => (c === SEM_VACIO ? "#C8D2E0" : "rgba(29,39,51,0.18)");
+  const estadoTexto = e => (e ? (SEM[e] || {}).label : "sin revisar");
+  const parte = (clave, nombre, estado, hijos) => {
+    const etiqueta = `${nombre}: ${estadoTexto(estado)}`;
+    if (!onZona) return <g key={clave}><title>{etiqueta}</title>{hijos}</g>;
+    return (
+      <g key={clave} role="button" tabIndex={0} aria-label={etiqueta} style={{ cursor:"pointer", outline:"none" }}
+        onClick={() => onZona(clave)} onKeyDown={ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onZona(clave); } }}>
+        <title>{etiqueta}</title>{hijos}
+      </g>
+    );
+  };
+  const rueda = (k, x, y) => {
+    const cl = llanta(k), cf = freno(k);
+    const e = peorEstado([valorPunto(datos, "llanta_" + k), valorPunto(datos, "freno_" + k)]);
+    return parte("rueda_" + k, (RUEDAS.find(r => r.k === k) || {}).l, e, <>
+      <rect x={x} y={y} width="20" height="48" rx="6" fill={cl.color === SEM_VACIO.color ? "#DCE3EC" : cl.color} stroke={trazo(cl)} strokeWidth="1.5" />
+      <rect x={x + 3} y={y + 6} width="14" height="36" rx="4" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="1" />
+      <circle cx={x + 10} cy={y + 24} r="6.5" fill={cf.color === SEM_VACIO.color ? "#F3F6F9" : cf.color} stroke="#FFFFFF" strokeWidth="2" />
+    </>);
+  };
+  const cFaros = z("faros"), cMotor = z("motor"), cBat = z("bateria"), cPara = z("parabrisas"), cCab = z("cabina"),
+    cMed = z("medallon"), cEjeD = z("eje_del"), cEjeT = z("eje_tra"), cEsc = z("escape");
+  const relleno = c => (c === SEM_VACIO ? SEM_VACIO.fondo : c.color);
+  const tinta = c => (c === SEM_VACIO ? "#8794A6" : c.tinta);
+  return (
+    <svg viewBox="0 0 240 400" width={ancho} height={ancho * 400 / 240} role="img" aria-label="Diagrama del vehículo con el estado de cada parte" style={{ display:"block", maxWidth:"100%", height:"auto" }}>
+      <path d="M120 14 C152 14 174 20 178 44 L182 128 C184 190 184 250 182 312 L178 358 C174 380 152 388 120 388 C88 388 66 380 62 358 L58 312 C56 250 56 190 58 128 L62 44 C66 20 88 14 120 14 Z" fill="#F7F9FB" stroke="#8794A6" strokeWidth="2" />
+      <path d="M58 142 L46 146 L46 157 L58 159 Z" fill="#E3E8EF" stroke="#8794A6" strokeWidth="1.2" />
+      <path d="M182 142 L194 146 L194 157 L182 159 Z" fill="#E3E8EF" stroke="#8794A6" strokeWidth="1.2" />
+      {parte("eje_del", ZONAS_AUTO.eje_del, estadoZona(datos, "eje_del"), <rect x="58" y="96" width="124" height="8" rx="4" fill={relleno(cEjeD)} stroke={trazo(cEjeD)} strokeWidth="1.2" />)}
+      {parte("eje_tra", ZONAS_AUTO.eje_tra, estadoZona(datos, "eje_tra"), <rect x="58" y="298" width="124" height="8" rx="4" fill={relleno(cEjeT)} stroke={trazo(cEjeT)} strokeWidth="1.2" />)}
+      {parte("faros", ZONAS_AUTO.faros, estadoZona(datos, "faros"), <>
+        <path d="M70 40 C72 28 82 22 98 21 L98 31 C86 32 78 36 72 44 Z" fill={relleno(cFaros)} stroke={trazo(cFaros)} strokeWidth="1.2" />
+        <path d="M170 40 C168 28 158 22 142 21 L142 31 C154 32 162 36 168 44 Z" fill={relleno(cFaros)} stroke={trazo(cFaros)} strokeWidth="1.2" />
+        <path d="M68 362 C70 372 80 380 96 381 L96 372 C84 371 76 367 70 358 Z" fill={relleno(cFaros)} stroke={trazo(cFaros)} strokeWidth="1.2" />
+        <path d="M172 362 C170 372 160 380 144 381 L144 372 C156 371 164 367 170 358 Z" fill={relleno(cFaros)} stroke={trazo(cFaros)} strokeWidth="1.2" />
+      </>)}
+      {parte("bateria", ZONAS_AUTO.bateria, estadoZona(datos, "bateria"), <>
+        <rect x="73" y="44" width="5" height="5" rx="1" fill="#8794A6" /><rect x="86" y="44" width="5" height="5" rx="1" fill="#8794A6" />
+        <rect x="70" y="48" width="24" height="17" rx="3" fill={relleno(cBat)} stroke={trazo(cBat)} strokeWidth="1.2" />
+        <text x="82" y="60.5" textAnchor="middle" fontSize="9" fontWeight="800" fill={tinta(cBat)}>+ −</text>
+      </>)}
+      {parte("motor", ZONAS_AUTO.motor, estadoZona(datos, "motor"), <>
+        <rect x="100" y="42" width="54" height="48" rx="9" fill={relleno(cMotor)} stroke={trazo(cMotor)} strokeWidth="1.2" />
+        {etiquetas && <text x="127" y="70" textAnchor="middle" fontSize="11" fontWeight="700" fill={tinta(cMotor)}>Motor</text>}
+      </>)}
+      {parte("parabrisas", ZONAS_AUTO.parabrisas, estadoZona(datos, "parabrisas"), <>
+        <path d="M80 126 L160 126 Q166 127 168 134 L172 156 L68 156 L72 134 Q74 127 80 126 Z" fill={relleno(cPara)} stroke={trazo(cPara)} strokeWidth="1.2" />
+        <path d="M84 135 L117 129 M124 135 L157 129" stroke={cPara === SEM_VACIO ? "#8794A6" : "#1D2733"} strokeWidth="2.6" strokeLinecap="round" opacity="0.8" />
+      </>)}
+      {parte("cabina", ZONAS_AUTO.cabina, estadoZona(datos, "cabina"), <>
+        <rect x="70" y="160" width="100" height="94" rx="10" fill={relleno(cCab)} stroke={trazo(cCab)} strokeWidth="1.2" />
+        {etiquetas && <text x="120" y="211" textAnchor="middle" fontSize="11" fontWeight="700" fill={tinta(cCab)}>Interior</text>}
+      </>)}
+      {parte("medallon", ZONAS_AUTO.medallon, estadoZona(datos, "medallon"), <>
+        <path d="M68 258 L172 258 L168 282 Q166 288 160 288 L80 288 Q74 288 72 282 Z" fill={relleno(cMed)} stroke={trazo(cMed)} strokeWidth="1.2" />
+        <path d="M80 266 H160 M78 272 H162 M77 278 H163" stroke={cMed === SEM_VACIO ? "#C8D2E0" : "rgba(255,255,255,0.55)"} strokeWidth="1" />
+        <path d="M108 284 L132 277" stroke={cMed === SEM_VACIO ? "#8794A6" : "#1D2733"} strokeWidth="2.2" strokeLinecap="round" opacity="0.8" />
+      </>)}
+      {parte("escape", ZONAS_AUTO.escape, estadoZona(datos, "escape"), <>
+        <rect x="146" y="330" width="7" height="52" rx="3.5" fill={relleno(cEsc)} stroke={trazo(cEsc)} strokeWidth="1.2" />
+        <rect x="126" y="316" width="30" height="17" rx="7" fill={relleno(cEsc)} stroke={trazo(cEsc)} strokeWidth="1.2" />
+      </>)}
+      {rueda("di", 38, 76)}{rueda("dd", 182, 76)}{rueda("ti", 38, 278)}{rueda("td", 182, 278)}
+    </svg>
+  );
+}
+
+// Barra con la proporción de verde, amarillo, rojo y sin revisar
+function BarraSemaforo({ res, alto = 10 }) {
+  const total = Math.max(1, (res && res.total) || 0);
+  const partes = [["v", res.v], ["a", res.a], ["r", res.r], ["", res.sin]].filter(p => p[1] > 0);
+  return (
+    <div role="img" aria-label={`${res.v || 0} en buen estado, ${res.a || 0} para atender pronto, ${res.r || 0} inmediatos, ${res.sin || 0} sin revisar`}
+      style={{ display:"flex", height:alto, borderRadius:alto, overflow:"hidden", background:SEM_VACIO.fondo, border:"1px solid " + BRAND.border }}>
+      {partes.map(([k, n]) => <div key={k || "sin"} style={{ width:(n * 100 / total) + "%", background:k ? SEM[k].color : "transparent" }} />)}
+    </div>
+  );
+}
+function ConteosSemaforo({ res, conSin = true, chico }) {
+  const filas = [["v", res.v, SEM.v.label], ["a", res.a, SEM.a.label], ["r", res.r, SEM.r.label]];
+  if (conSin && res.sin) filas.push(["", res.sin, "Sin revisar"]);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:chico ? 3 : 5 }}>
+      {filas.map(([k, n, l]) => (
+        <div key={l} style={{ display:"flex", alignItems:"center", gap:8, fontSize:chico ? 11 : 12.5, color:BRAND.text }}>
+          <span aria-hidden="true" style={{ width:chico ? 9 : 11, height:chico ? 9 : 11, borderRadius:"50%", background:k ? SEM[k].color : "#fff", border:k ? "none" : "1.5px solid " + SEM_VACIO.color, flexShrink:0 }} />
+          <b style={{ minWidth:chico ? 16 : 20, fontSize:chico ? 12 : 14, fontWeight:800 }}>{n || 0}</b><span style={{ color:BRAND.muted }}>{l}</span>
+        </div>))}
+    </div>
+  );
+}
+function PuntoSem({ e, tam = 10 }) {
+  const c = colorSem(e);
+  return <span aria-hidden="true" style={{ width:tam, height:tam, borderRadius:"50%", background:c === SEM_VACIO ? "#fff" : c.color, border:c === SEM_VACIO ? "1.5px solid " + SEM_VACIO.color : "none", flexShrink:0, display:"inline-block" }} />;
+}
+
+// Tres círculos (verde, amarillo, rojo). Tocar el marcado lo desmarca.
+function BotonesSemaforo({ valor, onCambiar, opciones = ["v", "a", "r"], conNA, editable, etiquetas, nombre }) {
+  return (
+    <div role="radiogroup" aria-label={nombre} style={{ display:"flex", gap:6, flexShrink:0, alignItems:"center" }}>
+      {conNA && (
+        <button type="button" role="radio" aria-checked={valor === "na"} disabled={!editable} onClick={() => onCambiar(valor === "na" ? "" : "na")} title="No aplica"
+          style={{ height:28, padding:"0 8px", borderRadius:14, border:"1.5px solid " + (valor === "na" ? SEM.na.color : BRAND.border), background:valor === "na" ? SEM.na.color : "#fff",
+            color:valor === "na" ? "#fff" : BRAND.muted, fontSize:10.5, fontWeight:700, cursor:editable ? "pointer" : "default", opacity:!editable && valor !== "na" ? 0.35 : 1 }}>N/A</button>
+      )}
+      {opciones.map(k => {
+        const sel = valor === k, c = SEM[k], txt = (etiquetas && etiquetas[k]) || c.label;
+        return (
+          <button key={k} type="button" role="radio" aria-checked={sel} aria-label={txt} title={txt} disabled={!editable}
+            onClick={() => onCambiar(sel ? "" : k)}
+            style={{ width:34, height:34, borderRadius:"50%", border:"2px solid " + c.color, background:sel ? c.color : c.fondo, color:c.tinta, cursor:editable ? "pointer" : "default",
+              fontSize:15, fontWeight:900, display:"flex", alignItems:"center", justifyContent:"center", padding:0, flexShrink:0,
+              opacity:!editable && !sel ? 0.35 : 1, boxShadow:sel ? "0 0 0 3px " + c.color + "33" : "none" }}>
+            {sel ? "✓" : ""}
+          </button>);
+      })}
+    </div>
+  );
+}
+
+function LeyendaSemaforo({ chico }) {
+  return (
+    <div style={{ display:"flex", flexWrap:"wrap", gap:chico ? "4px 12px" : "6px 14px", fontSize:chico ? 10.5 : 11.5, color:BRAND.muted }}>
+      {["v", "a", "r"].map(k => <span key={k} style={{ display:"inline-flex", alignItems:"center", gap:6 }}><PuntoSem e={k} tam={chico ? 9 : 10} />{SEM[k].label}</span>)}
+    </div>
+  );
+}
+
+// Chip de la revisión en las tarjetas de las órdenes
+function ChipRevision({ rev, onClick }) {
+  if (!rev) return null;
+  const base = { fontSize:10, borderRadius:5, padding:"2px 7px", fontWeight:700, display:"inline-flex", alignItems:"center", gap:4, cursor:onClick ? "pointer" : "default", border:"0.5px solid", fontFamily:"inherit", lineHeight:1.4 };
+  const clic = ev => { if (!onClick) return; ev.stopPropagation(); onClick(); };
+  if (rev.tipo === "pendiente")
+    return <button type="button" onClick={clic} title="Haz la revisión de cortesía con el cliente" style={{ ...base, background:SEM.a.fondo, color:SEM.a.texto, borderColor:SEM.a.color + "88" }}>🔍 Revisión pendiente</button>;
+  if (rev.tipo === "curso")
+    return <button type="button" onClick={clic} title="Revisión de cortesía sin terminar" style={{ ...base, background:BRAND.bg, color:BRAND.muted, borderColor:BRAND.border }}>🔍 Revisión {rev.revisados}/{rev.total}</button>;
+  const limpio = !rev.r && !rev.a;
+  return (
+    <button type="button" onClick={clic} title="Revisión de cortesía terminada" style={{ ...base, background:limpio ? SEM.v.fondo : "#fff", color:limpio ? SEM.v.texto : BRAND.text, borderColor:limpio ? SEM.v.color + "88" : BRAND.border }}>
+      🔍{limpio ? " Todo bien" : null}
+      {rev.r > 0 && <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><PuntoSem e="r" tam={8} />{rev.r}</span>}
+      {rev.a > 0 && <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><PuntoSem e="a" tam={8} />{rev.a}</span>}
+    </button>
+  );
+}
+
+// ─── Pestaña 🔍 Revisión de la orden ──────────────────────────────────────────
+const entradaRev = { background:"#FFFFFF", border:"1px solid " + BRAND.border, borderRadius:9, padding:"0.5rem 0.75rem", color:BRAND.text, fontSize:13, width:"100%", boxSizing:"border-box", fontFamily:"inherit" };
+const botonRev = (tono) => {
+  const t = { primario:{ bg:BRAND.accent, fg:"#fff", bd:BRAND.accent }, verde:{ bg:BRAND.green, fg:"#fff", bd:BRAND.green }, wa:{ bg:"#0B7A3B", fg:"#fff", bd:"#0B7A3B" },
+    claro:{ bg:"#fff", fg:BRAND.text, bd:BRAND.border }, suave:{ bg:BRAND.bg, fg:BRAND.text, bd:BRAND.border }, peligro:{ bg:"#FEF2F2", fg:"#B91C1C", bd:"#FCA5A5" } }[tono || "claro"];
+  return { display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6, background:t.bg, color:t.fg, border:"1px solid " + t.bd, borderRadius:10,
+    padding:"8px 13px", fontSize:12.5, fontWeight:700, cursor:"pointer", textDecoration:"none", whiteSpace:"nowrap", fontFamily:"inherit", lineHeight:1.2 };
+};
+const limpiarNumero = (v, max = 7) => String(v || "").replace(/\D/g, "").slice(0, max);
+const limpiarPrecio = v => { const t = String(v || "").replace(/[^\d.]/g, ""); const i = t.indexOf("."); return (i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, "").slice(0, 2)).slice(0, 10); };
+const fechaConAnio = f => (f ? `${fechaLarga(f)} de ${f.slice(0, 4)}` : "");
+const fechaCortaAnio = f => (f ? `${fechaCorta(f)} ${f.slice(0, 4)}` : "");
+
+// Mensaje de WhatsApp con lo que se encontró (y el enlace al reporte, si ya existe)
+const mensajeRevision = (r, tallerNombre, url) => {
+  const d = (r && r.datos) || {}, res = resumenRevision(d);
+  const nombre = primerNombre(r.cliente);
+  const auto = (textoVehiculo(r.vehiculo) || "vehículo") + (r.placa ? ` (placas ${r.placa})` : "");
+  const l = [`Hola${nombre ? " " + nombre : ""}, te escribimos de ${tallerNombre || "tu taller"}.`];
+  const hall = hallazgosDe(d), rojos = hall.filter(x => x.v === "r"), amarillos = hall.filter(x => x.v === "a");
+  if (!hall.length) l.push(`Revisamos tu ${auto}: ${res.v ? `los ${res.v} puntos que revisamos están en buen estado` : "ya iniciamos la revisión de cortesía"}.`);
+  else {
+    l.push(`Revisamos tu ${auto} y esto encontramos:`);
+    if (rojos.length) { l.push("", "🔴 Requiere atención inmediata:"); rojos.forEach(x => l.push("• " + textoHallazgo(x.it, x.v, d))); }
+    if (amarillos.length) { l.push("", "🟡 Conviene atender pronto:"); amarillos.forEach(x => l.push("• " + textoHallazgo(x.it, x.v, d))); }
+    if (res.v) l.push("", `✅ ${res.v} punto${res.v === 1 ? "" : "s"} en buen estado.`);
+  }
+  const sugs = sugerenciasDe(d).filter(s => s.decision !== "rechazada");
+  if (sugs.length) { l.push("", "Te recomendamos:"); sugs.forEach(s => l.push(`• ${s.texto}${s.precio ? " — " + dinero(s.precio) : ""}${s.decision === "aceptada" ? " (autorizado)" : ""}`)); }
+  if (url) l.push("", "Aquí puedes ver el reporte completo, con el diagrama de tu vehículo:", url);
+  l.push("", "Cualquier duda, estamos a tus órdenes.");
+  return l.join("\n");
+};
+
+function FilaPunto({ it, datos, editable, onValor, onNota, opciones, etiquetas }) {
+  const v = valorPunto(datos, it.k), c = v ? SEM[v] : null;
+  const nota = datos["n." + it.k] || "";
+  const conNota = v === "a" || v === "r";
+  return (
+    <div style={{ padding:"9px 0", borderBottom:"0.5px solid " + BRAND.border }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <span aria-hidden="true" style={{ width:4, alignSelf:"stretch", minHeight:30, borderRadius:2, background:c ? c.color : SEM_VACIO.fondo, flexShrink:0 }} />
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:BRAND.text, lineHeight:1.3 }}>{it.l}</div>
+          {v && <div style={{ fontSize:11, color:c.texto, fontWeight:600, marginTop:1 }}>{(etiquetas && etiquetas[v]) || c.label}</div>}
+        </div>
+        <BotonesSemaforo valor={v} onCambiar={onValor} opciones={opciones} conNA={it.opc} editable={editable} etiquetas={etiquetas} nombre={it.l} />
+      </div>
+      {conNota && (editable || nota) && (
+        <input value={nota} disabled={!editable} onChange={e => onNota(e.target.value.slice(0, 200))} aria-label={"Qué se encontró en " + it.l}
+          placeholder="¿Qué encontraste? (opcional; lo verá el cliente)"
+          style={{ ...entradaRev, marginTop:7, marginLeft:14, width:"calc(100% - 14px)", fontSize:12, padding:"6px 9px", borderColor:c.color + "99", background:c.fondo }} />
+      )}
+    </div>
+  );
+}
+
+function SeccionRev({ id, titulo, items, datos, editable, abierta, onAlternar, onTodoBien, children, conteo, mb = 12 }) {
+  const marcados = conteo ? conteo.hechos : items.filter(it => valorPunto(datos, it.k)).length;
+  const total = conteo ? conteo.total : items.length, faltan = total - marcados;
+  const peor = conteo ? null : peorEstado(items.map(it => valorPunto(datos, it.k)));
+  return (
+    <section data-seccion={id} style={{ background:"#fff", border:"1px solid " + BRAND.border, borderRadius:12, scrollMarginTop:170, breakInside:"avoid", marginBottom:mb }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom:abierta ? "0.5px solid " + BRAND.border : "none" }}>
+        <button type="button" onClick={onAlternar} aria-expanded={abierta}
+          style={{ flex:1, display:"flex", alignItems:"center", gap:8, background:"none", border:"none", padding:0, cursor:"pointer", textAlign:"left", minWidth:0, fontFamily:"inherit" }}>
+          {peor !== null && <PuntoSem e={peor} tam={12} />}
+          <span style={{ fontSize:14, fontWeight:800, color:BRAND.text }}>{titulo}</span>
+          <span style={{ fontSize:11.5, color:faltan ? BRAND.muted : SEM.v.texto, fontWeight:700 }}>{marcados}/{total}</span>
+          <span aria-hidden="true" style={{ marginLeft:"auto", color:BRAND.muted, fontSize:11 }}>{abierta ? "▲" : "▼"}</span>
+        </button>
+        {editable && onTodoBien && abierta && faltan > 0 && (
+          <button type="button" onClick={onTodoBien} title="Marca en verde los puntos que faltan de esta sección"
+            style={{ ...botonRev("claro"), padding:"5px 10px", fontSize:11.5, color:SEM.v.texto, borderColor:SEM.v.color + "88", background:SEM.v.fondo }}>✓ {faltan === total ? "Todo bien" : "Lo demás bien"}</button>
+        )}
+      </div>
+      {abierta && <div style={{ padding:"2px 12px 10px" }}>{children}</div>}
+    </section>
+  );
+}
+
+function TarjetaRueda({ rueda, datos, editable, ponerDato }) {
+  const opcion = (clave, k, texto) => {
+    const sel = valorPunto(datos, clave) === k, c = SEM[k];
+    return (
+      <button key={clave + k} type="button" aria-pressed={sel} disabled={!editable} onClick={() => ponerDato("p." + clave, sel ? undefined : k)}
+        style={{ display:"flex", alignItems:"center", gap:7, width:"100%", textAlign:"left", padding:"6px 8px", borderRadius:8, border:"1.5px solid " + (sel ? c.color : BRAND.border),
+          background:sel ? c.fondo : "#fff", color:sel ? c.texto : BRAND.text, fontSize:11.5, fontWeight:sel ? 800 : 500, cursor:editable ? "pointer" : "default",
+          opacity:!editable && !sel ? 0.45 : 1, fontFamily:"inherit", lineHeight:1.2 }}>
+        <span aria-hidden="true" style={{ width:11, height:11, borderRadius:"50%", background:c.color, flexShrink:0, boxShadow:sel ? "0 0 0 2px #fff, 0 0 0 3.5px " + c.color : "none" }} />{texto}
+      </button>
+    );
+  };
+  const desg = !!datos["desg." + rueda.k];
+  return (
+    <div style={{ border:"1px solid " + BRAND.border, borderRadius:12, padding:"0.6rem", background:"#fff", display:"flex", flexDirection:"column", gap:5, minWidth:0 }}>
+      <div style={{ fontSize:12.5, fontWeight:800, color:BRAND.text }}>{rueda.l}</div>
+      <div style={{ fontSize:10.5, color:BRAND.muted, fontWeight:700, marginTop:2 }}>Llanta · profundidad</div>
+      {["v", "a", "r"].map(k => opcion("llanta_" + rueda.k, k, PISADA[k]))}
+      <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:11.5, color:BRAND.muted, fontWeight:600 }}>Presión
+        <input inputMode="numeric" disabled={!editable} value={datos["psi." + rueda.k] || ""} onChange={e => ponerDato("psi." + rueda.k, limpiarNumero(e.target.value, 3))} placeholder="32"
+          style={{ ...entradaRev, width:58, padding:"5px 8px", fontSize:12.5 }} aria-label={"Presión de la " + rueda.llanta.toLowerCase() + " en PSI"} />PSI</label>
+      <div style={{ fontSize:10.5, color:BRAND.muted, fontWeight:700, marginTop:4 }}>Balatas</div>
+      {["v", "a", "r"].map(k => opcion("freno_" + rueda.k, k, BALATAS[k]))}
+      <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:11.5, color:desg ? SEM.a.texto : BRAND.muted, fontWeight:700, marginTop:3, cursor:editable ? "pointer" : "default" }}>
+        <input type="checkbox" disabled={!editable} checked={desg} onChange={e => ponerDato("desg." + rueda.k, e.target.checked || undefined)} style={{ width:16, height:16, accentColor:SEM.a.color }} />
+        Mayor desgaste
+      </label>
+    </div>
+  );
+}
+
+function InventarioRev({ datos, editable, ponerDatos }) {
+  const si = INVENTARIO.filter(it => datos["i." + it.k] === "si").length, no = INVENTARIO.filter(it => datos["i." + it.k] === "no").length;
+  const siguiente = v => (v === "si" ? "no" : v === "no" ? undefined : "si");
+  const comb = datos["comb"] || "";
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        <div style={{ fontSize:11.5, color:BRAND.muted }}>Toca una vez si lo trae (✓) y otra si falta (✕). {si + no > 0 && <b style={{ color:BRAND.text }}>{si} trae · {no} falta{no === 1 ? "" : "n"}</b>}</div>
+        {editable && si + no < INVENTARIO.length && (
+          <button type="button" onClick={() => { const c = {}; INVENTARIO.forEach(it => { if (!datos["i." + it.k]) c["i." + it.k] = "si"; }); ponerDatos(c); }}
+            style={{ ...botonRev("claro"), padding:"5px 10px", fontSize:11.5 }}>✓ Lo demás lo trae</button>)}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:6 }}>
+        {INVENTARIO.map(it => {
+          const v = datos["i." + it.k];
+          const c = v === "si" ? SEM.v : v === "no" ? SEM.r : null;
+          return (
+            <button key={it.k} type="button" disabled={!editable} onClick={() => ponerDatos({ ["i." + it.k]: siguiente(v) })}
+              aria-label={`${it.l}: ${v === "si" ? "sí lo trae" : v === "no" ? "falta" : "sin revisar"}`}
+              style={{ display:"flex", alignItems:"center", gap:7, padding:"7px 9px", borderRadius:9, border:"1px solid " + (c ? c.color : BRAND.border), background:c ? c.fondo : "#fff",
+                color:c ? c.texto : BRAND.text, fontSize:12, fontWeight:c ? 700 : 500, textAlign:"left", cursor:editable ? "pointer" : "default", fontFamily:"inherit", lineHeight:1.2, minWidth:0 }}>
+              <span aria-hidden="true" style={{ width:18, height:18, borderRadius:5, border:"1.5px solid " + (c ? c.color : SEM_VACIO.color), background:c ? c.color : "#fff", color:"#fff",
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:900, flexShrink:0 }}>{v === "si" ? "✓" : v === "no" ? "✕" : ""}</span>
+              <span style={{ overflow:"hidden", textOverflow:"ellipsis" }}>{it.l}</span>
+            </button>);
+        })}
+      </div>
+      <div>
+        <div style={{ fontSize:11.5, color:BRAND.muted, fontWeight:700, marginBottom:5 }}>Nivel de combustible</div>
+        <div role="radiogroup" aria-label="Nivel de combustible" style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+          {COMBUSTIBLE.map(op => { const sel = comb === op.k; return (
+            <button key={op.k} type="button" role="radio" aria-checked={sel} disabled={!editable} onClick={() => ponerDatos({ comb: sel ? undefined : op.k })}
+              style={{ ...botonRev(sel ? "primario" : "claro"), padding:"6px 12px", minWidth:48, cursor:editable ? "pointer" : "default" }}>{op.l}</button>); })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ServiciosSugeridos({ datos, editable, ponerDatos, onDecision }) {
+  const [nuevo, setNuevo] = useState("");
+  const [urg, setUrg] = useState("pronto");
+  const lista = sugerenciasDe(datos);
+  const autorizado = lista.filter(s => s.decision === "aceptada").reduce((t, s) => t + s.precio, 0);
+  const cotizado = lista.filter(s => s.decision !== "rechazada").reduce((t, s) => t + s.precio, 0);
+  const agregar = () => {
+    const t = nuevo.trim();
+    if (!t) return;
+    const n = Date.now();
+    ponerDatos({ ["m." + n.toString(36)]: { texto: t.slice(0, 120), urg, n } });
+    setNuevo("");
+  };
+  const quitar = s => ponerDatos({ ["m." + s.k.slice(2)]: undefined, ["s." + s.k]: undefined, ["$." + s.k]: undefined });
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {lista.length === 0 && <div style={{ fontSize:12, color:BRAND.muted, padding:"6px 0" }}>Cuando marques algo en amarillo o rojo, aquí aparecerá el servicio que conviene ofrecer. También puedes agregar uno a mano.</div>}
+      {lista.map(s => {
+        const u = SEM[URGENCIAS[s.urg].sem];
+        return (
+          <div key={s.k} style={{ border:"1px solid " + BRAND.border, borderLeft:"4px solid " + u.color, borderRadius:10, padding:"8px 10px", background:s.decision === "rechazada" ? BRAND.bg : "#fff", opacity:s.decision === "rechazada" ? 0.8 : 1 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+              <span style={{ fontSize:10.5, fontWeight:800, color:u.texto, background:u.fondo, borderRadius:20, padding:"2px 8px" }}>{URGENCIAS[s.urg].l}</span>
+              <span style={{ fontSize:13, fontWeight:700, color:BRAND.text, flex:"1 1 160px", minWidth:0, textDecoration:s.decision === "rechazada" ? "line-through" : "none" }}>{s.texto}</span>
+              {!s.auto && editable && <button type="button" onClick={() => quitar(s)} aria-label={"Quitar " + s.texto} style={{ background:"none", border:"none", color:BRAND.muted, cursor:"pointer", fontSize:13 }}>✕</button>}
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginTop:7 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:BRAND.muted, fontWeight:700 }}>$
+                <input inputMode="decimal" disabled={!editable} value={datos["$." + s.k] || ""} onChange={e => ponerDatos({ ["$." + s.k]: limpiarPrecio(e.target.value) || undefined })} placeholder="Precio"
+                  aria-label={"Precio de " + s.texto} style={{ ...entradaRev, width:96, padding:"5px 8px", fontSize:12.5 }} /></label>
+              <div role="radiogroup" aria-label={"Respuesta del cliente: " + s.texto} style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                {DECISIONES.map(d => { const sel = s.decision === d.k; return (
+                  <button key={d.k} type="button" role="radio" aria-checked={sel} disabled={!editable} onClick={() => onDecision(s, d.k)}
+                    style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"5px 10px", borderRadius:20, border:"1.5px solid " + (sel ? d.borde : BRAND.border), background:sel ? d.fondo : "#fff",
+                      color:sel ? d.texto : BRAND.muted, fontSize:11.5, fontWeight:sel ? 800 : 600, cursor:editable ? "pointer" : "default", fontFamily:"inherit" }}>{d.icono} {d.l}</button>); })}
+              </div>
+            </div>
+          </div>);
+      })}
+      {(autorizado > 0 || cotizado > 0) && (
+        <div style={{ display:"flex", justifyContent:"flex-end", gap:16, flexWrap:"wrap", fontSize:12.5, color:BRAND.muted }}>
+          {cotizado > 0 && <span>Recomendado: <b style={{ color:BRAND.text }}>{dinero(cotizado)}</b></span>}
+          <span>Autorizado: <b style={{ color:SEM.v.texto }}>{dinero(autorizado)}</b></span>
+        </div>)}
+      {editable && (
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", borderTop:"0.5px dashed " + BRAND.border, paddingTop:9 }}>
+          <input value={nuevo} onChange={e => setNuevo(e.target.value)} onKeyDown={e => { if (e.key === "Enter") agregar(); }} placeholder="Otro servicio (ej. Afinación mayor)"
+            aria-label="Agregar otro servicio sugerido" style={{ ...entradaRev, flex:"1 1 180px", width:"auto", fontSize:12.5 }} />
+          <select value={urg} onChange={e => setUrg(e.target.value)} aria-label="Urgencia" style={{ ...entradaRev, width:"auto", fontSize:12.5 }}>
+            <option value="pronto">Pronto</option><option value="inmediata">Inmediata</option>
+          </select>
+          <button type="button" onClick={agregar} disabled={!nuevo.trim()} style={{ ...botonRev("suave"), opacity:nuevo.trim() ? 1 : 0.5 }}>+ Agregar</button>
+        </div>)}
+    </div>
+  );
+}
+
+// Lo que cambió desde la visita anterior y lo que el cliente dejó pendiente
+function CambiosVisita({ previa, actual, compacto }) {
+  const cambios = actual ? cambiosEntreVisitas(previa.datos, actual.datos) : [];
+  const pendientes = sugerenciasDe(previa.datos).filter(s => s.decision !== "aceptada" && s.decision !== "rechazada");
+  const km = actual && actual.km != null && previa.km != null && actual.km >= previa.km ? actual.km - previa.km : null;
+  if (!cambios.length && !pendientes.length && compacto) return null;
+  return (
+    <div style={{ background:"#F2F6FF", border:"1px solid #C9D8FB", borderRadius:12, padding:"0.75rem 0.9rem", display:"flex", flexDirection:"column", gap:7 }}>
+      <div style={{ fontSize:13, fontWeight:800, color:"#1E3A8A" }}>🔁 Este vehículo ya vino: revisión del {fechaCortaAnio(previa.fecha)}{previa.ordenId ? ` (${previa.ordenId})` : ""}{previa.km != null ? ` · ${previa.km.toLocaleString("es-MX")} km` : ""}{km !== null ? ` · +${km.toLocaleString("es-MX")} km desde entonces` : ""}</div>
+      {pendientes.length > 0 && (
+        <div style={{ fontSize:12.5, color:BRAND.text, lineHeight:1.45 }}><b>Quedó pendiente:</b> {pendientes.map(s => s.texto).join(", ")}. <span style={{ color:"#1E3A8A", fontWeight:700 }}>Ofrécelo en esta visita.</span></div>)}
+      {cambios.length > 0 && (
+        <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+          {cambios.slice(0, compacto ? 4 : 12).map(x => (
+            <div key={x.it.k} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:BRAND.text, flexWrap:"wrap" }}>
+              <span aria-hidden="true" style={{ fontWeight:900, color:x.mejora ? SEM.v.texto : SEM.r.texto, width:12 }}>{x.mejora ? "▲" : "▼"}</span>
+              <span style={{ fontWeight:600 }}>{x.it.l}:</span>
+              <span style={{ display:"inline-flex", alignItems:"center", gap:4 }}><PuntoSem e={x.a} tam={9} />{descripcionValor(x.it, x.a)}</span>
+              <span aria-hidden="true" style={{ color:BRAND.muted }}>→</span>
+              <span style={{ display:"inline-flex", alignItems:"center", gap:4, fontWeight:700 }}><PuntoSem e={x.b} tam={9} />{descripcionValor(x.it, x.b)}</span>
+            </div>))}
+        </div>)}
+    </div>
+  );
+}
+
+function FilaHistorialRev({ r, onVer }) {
+  const res = resumenRevision(r.datos);
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"0.5px solid " + BRAND.border, flexWrap:"wrap" }}>
+      <div style={{ minWidth:120 }}>
+        <div style={{ fontSize:12.5, fontWeight:700 }}>{fechaCortaAnio(r.fecha)}{r.ordenId ? <span style={{ color:BRAND.accent }}> · {r.ordenId}</span> : null}</div>
+        <div style={{ fontSize:11, color:BRAND.muted }}>{r.km != null ? r.km.toLocaleString("es-MX") + " km" : "Sin kilometraje"}{r.estado !== "terminada" ? " · sin terminar" : ""}</div>
+      </div>
+      <div style={{ flex:"1 1 120px", minWidth:100 }}><BarraSemaforo res={res} alto={8} /></div>
+      <div style={{ display:"flex", gap:8, fontSize:11.5, fontWeight:700 }}>
+        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><PuntoSem e="r" tam={8} />{res.r}</span>
+        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><PuntoSem e="a" tam={8} />{res.a}</span>
+        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><PuntoSem e="v" tam={8} />{res.v}</span>
+      </div>
+      {onVer && <button type="button" onClick={() => onVer(r)} style={{ ...botonRev("claro"), padding:"5px 10px", fontSize:11.5 }}>Ver reporte</button>}
+    </div>
+  );
+}
+
+function RevisionOrden({ o, revs, usuario, taller, recienCreada, onBitacora, telefono }) {
+  const ancho = useMedia("(min-width: 1180px)");
+  const [cargando, setCargando] = useState(true);
+  const [errorCarga, setErrorCarga] = useState("");
+  const [intentoCarga, setIntentoCarga] = useState(0);
+  const [cerradas, setCerradas] = useState({});
+  const [vista, setVista] = useState(null);
+  const [ayuda, setAyuda] = useState(false);
+  const [preparando, setPreparando] = useState(false);
+  const [copiado, setCopiado] = useState("");
+  const editable = revs.puedeEditar;
+  const id = revs.idDeOrden(o.id);
+  const r = revs.revision(id);
+  const datos = (r && r.datos) || {};
+  const res = resumenRevision(datos);
+  const titular = titularRevision(res);
+
+  useEffect(() => {
+    let vivo = true;
+    setCargando(true); setErrorCarga("");
+    revs.abrirDeOrden(o)
+      .catch(() => { if (vivo) setErrorCarga("No se pudo cargar la revisión. Verifica tu conexión e inténtalo de nuevo."); })
+      .finally(() => { if (vivo) setCargando(false); });
+    return () => { vivo = false; };
+  }, [o.id, intentoCarga]);
+  useEffect(() => { revs.historialVehiculo(o.placa, o.serie).catch(() => {}); }, [o.placa, o.serie]);
+  // Los datos del vehículo se toman de la orden: si se corrigen ahí, la revisión se actualiza
+  useEffect(() => {
+    if (!r || !editable) return;
+    const c = {};
+    ["cliente", "vehiculo", "placa", "serie", "color"].forEach(k => { if ((o[k] || "") !== (r[k] || "")) c[k] = o[k] || ""; });
+    if (Object.keys(c).length) revs.cambiar(r.id, x => ({ ...x, ...c }));
+  }, [r && r.id, o.cliente, o.vehiculo, o.placa, o.serie, o.color]);
+
+  const historial = (revs.vehiculoEnCache(o.placa, o.serie) || []).filter(x => !r || x.id !== r.id);
+  const previa = r ? historial.find(x => revisionAnterior(x, r)) : historial[0];
+
+  const editar = fn => { if (!editable) return; const rid = id && r ? id : revs.crear(o); revs.cambiar(rid, fn); };
+  const ponerDatos = cambios => editar(x => {
+    const d = { ...x.datos };
+    Object.entries(cambios).forEach(([k, v]) => { if (v === undefined || v === null || v === "" || v === false) delete d[k]; else d[k] = v; });
+    return igual(d, x.datos) ? x : { ...x, datos: d };
+  });
+  const ponerDato = (k, v) => ponerDatos({ [k]: v });
+  const ponerCampo = (campo, v) => editar(x => (x[campo] === v ? x : { ...x, [campo]: v }));
+  const todoBien = items => { const c = {}; items.forEach(it => { if (!valorPunto(datos, it.k)) c["p." + it.k] = "v"; }); ponerDatos(c); };
+  const abierta = k => !cerradas[k];
+  const alternar = k => setCerradas(p => ({ ...p, [k]: !p[k] }));
+  const irA = sec => { setCerradas(p => ({ ...p, [sec]: false })); setTimeout(() => { const el = document.querySelector(`[data-seccion="${sec}"]`); if (el) el.scrollIntoView({ behavior:"smooth", block:"start" }); }, 40); };
+  const empezar = () => { const rid = revs.crear(o); revs.guardarYa(rid); irA(REV_SECCIONES[0].k); };
+  const decidir = (s, d) => {
+    const nueva = s.decision === d ? "" : d;
+    ponerDato("s." + s.k, nueva || undefined);
+    if (nueva) { const info = DECISIONES.find(x => x.k === nueva); onBitacora(`Revisión de cortesía · ${info.bitacora}: ${s.texto}${s.precio ? " (" + dinero(s.precio) + ")" : ""}`); }
+  };
+  const terminar = () => {
+    if (!r) return;
+    if (res.sin > 0 && !confirm(`Faltan ${res.sin} punto${res.sin > 1 ? "s" : ""} por revisar. ¿Terminar la revisión de todos modos?`)) return;
+    ponerCampo("estado", "terminada");
+    onBitacora(`Revisión de cortesía terminada: ${res.r} en rojo, ${res.a} en amarillo, ${res.v} en verde`);
+    irA("compartir");                         // siguiente paso: mandársela al cliente
+  };
+  const eliminar = async () => {
+    if (!r || !confirm("¿Eliminar esta revisión de cortesía? Se borra también del historial del vehículo. No se puede deshacer.")) return;
+    try { await revs.eliminar(r.id); } catch (e) { alert("No se pudo eliminar la revisión. " + (e.message || "")); }
+  };
+  const prepararEnlace = async () => {
+    if (!r || preparando) return;
+    setPreparando(true);
+    revs.cambiar(r.id, x => ({ ...x, enlace: claveEnlace(), enlaceVence: sumarDias(hoyLocal(), DIAS_VIGENCIA_ENLACE) }));
+    try { await revs.guardarYa(r.id); } finally { setPreparando(false); }
+  };
+  const quitarEnlace = () => {
+    if (!r || !confirm("¿Desactivar el enlace? El cliente ya no podrá abrir el reporte con él.")) return;
+    revs.cambiar(r.id, x => ({ ...x, enlace: "", enlaceVence: "" }));
+    revs.guardarYa(r.id);
+  };
+  const copiar = (texto, que) => { try { navigator.clipboard.writeText(texto).then(() => { setCopiado(que); setTimeout(() => setCopiado(""), 2500); }, () => {}); } catch (_) {} };
+
+  const imprimir = (tipo, rv) => {
+    if (tipo === "formato") { setVista({ tipo }); return; }
+    const sujeto = rv || r;
+    if (!sujeto) return;
+    const anteriores = (revs.vehiculoEnCache(o.placa, o.serie) || []).filter(x => x.id !== sujeto.id && revisionAnterior(x, sujeto));
+    setVista({ tipo, rev: sujeto, previa: anteriores[0] || null, historial: anteriores });
+  };
+
+  const g = r ? revs.estadoGuardado(r.id) : "";
+  const textoGuardado = !r ? "" : g === "guardando" ? "Guardando…" : g === "pendiente" ? "Guardando cambios…" : g === "error" ? "Sin conexión: se reintentará solo" : g === "rechazado" ? "No se pudo guardar" : revs.esDemo ? "Modo demostración" : "Guardado ✓";
+  const colorGuardado = g === "error" || g === "rechazado" ? "#B91C1C" : g === "guardado" ? SEM.v.texto : BRAND.muted;
+  const tel = numeroWhatsApp(telefono);
+  const listo = !!r && enlaceRevVigente(r) && g === "guardado";
+  const url = listo ? urlReporte(r.enlace) : "";
+  const mensaje = r ? mensajeRevision(r, taller.nombre, url) : "";
+  const tarjeta = { background:"#fff", border:"1px solid " + BRAND.border, borderRadius:12, padding:"0.8rem 0.9rem" };
+  const tituloTarjeta = { fontSize:14, fontWeight:800, color:BRAND.text, marginBottom:8 };
+  const etiqueta = { fontSize:11, color:BRAND.muted, fontWeight:700, display:"block", marginBottom:4 };
+
+  const portal = vista && (
+    <VistaImpresion titulo={vista.tipo === "formato" ? "Formato de revisión de cortesía" : `Revisión ${vista.rev.ordenId || ""} ${textoVehiculo(vista.rev.vehiculo)}`.trim()} onCerrar={() => setVista(null)}>
+      {vista.tipo === "formato" ? <FormatoEnBlanco taller={taller} /> : <HojasReporte rev={vista.rev} taller={taller} previa={vista.previa} historial={vista.historial} />}
+    </VistaImpresion>
+  );
+
+  if (revs.tabla === "sin_tabla") return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ ...tarjeta, background:"#FFF8E6", borderColor:"#F3D27A" }}>
+        <div style={{ fontSize:14, fontWeight:800, color:"#6B4800" }}>Las revisiones de cortesía aún no están activas</div>
+        <div style={{ fontSize:12.5, color:BRAND.text, marginTop:4, lineHeight:1.5 }}>{puedePerm(usuario, "todo")
+          ? "Falta un paso en el servidor: ejecuta el archivo migracion_revisiones.sql en Supabase → SQL Editor. Mientras tanto, puedes imprimir el formato para llenarlo a mano."
+          : "Falta que el administrador del taller termine de activarlas. Mientras tanto, puedes imprimir el formato para llenarlo a mano."}</div>
+        <div style={{ marginTop:10 }}><button type="button" onClick={() => imprimir("formato")} style={botonRev("claro")}>🖨 Formato para llenar a mano</button></div>
+      </div>
+      {portal}
+    </div>);
+  if (!r && cargando) return <div style={{ fontSize:12.5, color:BRAND.muted, textAlign:"center", padding:"2rem 0" }}>Cargando revisión…</div>;
+  if (!r && errorCarga) return (
+    <div style={{ textAlign:"center", padding:"1.5rem 0" }}>
+      <div style={{ fontSize:12.5, color:"#B91C1C", marginBottom:10 }}>{errorCarga}</div>
+      <button type="button" onClick={() => setIntentoCarga(n => n + 1)} style={botonRev("claro")}>Reintentar</button>
+    </div>);
+  if (!r && !editable) return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ fontSize:12.5, color:BRAND.muted, textAlign:"center", padding:"1rem 0" }}>Esta orden aún no tiene revisión de cortesía.</div>
+      {previa && <CambiosVisita previa={previa} actual={null} />}
+      {historial.length > 0 && <div style={tarjeta}><div style={tituloTarjeta}>Historial de este vehículo</div>{historial.map(x => <FilaHistorialRev key={x.id} r={x} onVer={rv => imprimir("reporte", rv)} />)}</div>}
+      {portal}
+    </div>);
+
+  const seccionesUI = REV_SECCIONES.map(s => {
+    const itemsSec = REV_ITEMS.filter(it => it.s === s.k);
+    const opciones = s.tipo === "niveles" ? ["v", "r"] : undefined, etiquetas = s.tipo === "niveles" ? NIVELES : undefined;
+    return (
+      <SeccionRev key={s.k} id={s.k} titulo={s.t} items={itemsSec} datos={datos} editable={editable} abierta={abierta(s.k)} onAlternar={() => alternar(s.k)} onTodoBien={() => todoBien(itemsSec)}>
+        {s.tipo === "ruedas" && (
+          <div style={{ display:"flex", flexDirection:"column", gap:10, paddingTop:10 }}>
+            <div style={{ fontSize:11, color:BRAND.muted }}>Como si vieras el vehículo desde arriba: el frente queda arriba.</div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8 }}>
+              {RUEDAS.map(rd => <TarjetaRueda key={rd.k} rueda={rd} datos={datos} editable={editable} ponerDato={ponerDato} />)}
+            </div>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              {CHECKS_RUEDAS.map(c => { const sel = !!datos[c.k]; return (
+                <button key={c.k} type="button" aria-pressed={sel} disabled={!editable} onClick={() => ponerDato(c.k, sel ? undefined : true)}
+                  style={{ ...botonRev(sel ? "suave" : "claro"), padding:"6px 11px", fontSize:12, borderColor:sel ? SEM.a.color : BRAND.border, background:sel ? SEM.a.fondo : "#fff", color:sel ? SEM.a.texto : BRAND.muted, cursor:editable ? "pointer" : "default" }}>
+                  {sel ? "☑" : "☐"} {c.l}</button>); })}
+            </div>
+          </div>)}
+        {s.items.map((it, i) => (
+          <div key={it.k}>
+            {it.grupo && <div style={{ fontSize:11, fontWeight:800, color:BRAND.muted, textTransform:"uppercase", letterSpacing:0.6, marginTop:12 }}>{it.grupo}</div>}
+            <FilaPunto it={REV_ITEMS.find(x => x.k === it.k)} datos={datos} editable={editable} opciones={opciones} etiquetas={etiquetas}
+              onValor={v => ponerDato("p." + it.k, v || undefined)} onNota={t => ponerDato("n." + it.k, t || undefined)} />
+          </div>))}
+      </SeccionRev>);
+  });
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      {!r && (
+        <div style={{ ...tarjeta, background:"#FFF8E6", borderColor:"#F3D27A", padding:"0.9rem 1rem" }}>
+          <div style={{ fontSize:14.5, fontWeight:800, color:"#6B4800", lineHeight:1.3 }}>{recienCreada ? `Orden ${o.id} creada. Antes de que el cliente se vaya, hagan juntos la revisión de cortesía` : "Esta orden aún no tiene revisión de cortesía"}</div>
+          <p style={{ fontSize:12.5, color:BRAND.text, margin:"6px 0 0", lineHeight:1.5 }}>Recorre el vehículo con el cliente y marca cada punto en verde, amarillo o rojo. Lo amarillo y lo rojo se vuelve una lista de servicios sugeridos que puedes cotizarle en ese momento y mandarle por WhatsApp.</p>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:10 }}>
+            <button type="button" onClick={empezar} style={botonRev("primario")}>Empezar revisión</button>
+            <button type="button" onClick={() => imprimir("formato")} style={botonRev("claro")}>🖨 Formato para llenar a mano</button>
+          </div>
+        </div>)}
+      {previa && <CambiosVisita previa={previa} actual={r} compacto={!!r} />}
+
+      <div style={{ ...tarjeta, padding:"0.9rem 1rem" }}>
+        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontSize:15, fontWeight:800 }}>Revisión de puntos de cortesía</div>
+            <div style={{ fontSize:11.5, color:BRAND.muted, marginTop:2 }}>{res.revisados} de {res.total} puntos revisados{textoGuardado ? <> · <span style={{ color:colorGuardado, fontWeight:700 }}>{textoGuardado}</span></> : null}</div>
+          </div>
+          {r && <span style={{ fontSize:11, fontWeight:800, borderRadius:20, padding:"3px 10px", background:r.estado === "terminada" ? SEM.v.fondo : BRAND.bg, color:r.estado === "terminada" ? SEM.v.texto : BRAND.muted, border:"0.5px solid " + (r.estado === "terminada" ? SEM.v.color : BRAND.border) }}>{r.estado === "terminada" ? "✓ Terminada" : "En curso"}</span>}
+        </div>
+        <div style={{ height:5, borderRadius:5, background:BRAND.bg, marginTop:8, overflow:"hidden" }}><div style={{ width:(res.total ? res.revisados * 100 / res.total : 0) + "%", height:"100%", background:BRAND.accent, transition:"width .3s" }} /></div>
+        <div style={{ display:"flex", gap:14, alignItems:"center", marginTop:12, flexWrap:"wrap" }}>
+          <div style={{ flexShrink:0, margin:"0 auto" }}><DiagramaVehiculo datos={datos} ancho={ancho ? 170 : 124} onZona={z => irA(seccionDeZona(z))} /></div>
+          <div style={{ flex:"1 1 170px", minWidth:0, display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ fontSize:15.5, fontWeight:800, color:titular.sem ? SEM[titular.sem].texto : BRAND.text, lineHeight:1.25 }}>{titular.texto}</div>
+            <BarraSemaforo res={res} />
+            <ConteosSemaforo res={res} />
+            <div style={{ fontSize:11, color:BRAND.muted }}>Toca una parte del diagrama para ir a sus puntos.</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:12 }}>
+          <button type="button" onClick={() => imprimir("reporte")} disabled={!r} style={{ ...botonRev("claro"), opacity:r ? 1 : 0.5 }}>🖨 Reporte PDF</button>
+          <button type="button" onClick={() => irA("compartir")} disabled={!r} style={{ ...botonRev("claro"), opacity:r ? 1 : 0.5 }}>💬 Enviar al cliente</button>
+          {editable && r && r.estado !== "terminada" && <button type="button" onClick={terminar} style={botonRev("verde")}>✓ Terminar revisión</button>}
+          <button type="button" onClick={() => setAyuda(a => !a)} aria-expanded={ayuda} style={{ ...botonRev("claro"), border:"none", background:"none", color:BRAND.blue, padding:"8px 4px" }}>💡 Cómo presentarla al cliente</button>
+        </div>
+        {ayuda && (
+          <ul style={{ margin:"10px 0 0", paddingLeft:18, fontSize:12.5, color:BRAND.text, lineHeight:1.55 }}>
+            <li>Enséñale el diagrama: verde está bien, amarillo conviene atenderlo pronto y rojo hay que atenderlo ya.</li>
+            <li>Empieza por lo rojo: dile qué encontraste y qué puede pasar si no se atiende.</li>
+            <li>Cotiza lo sugerido en ese momento y anota su respuesta. Lo que deje para después te aparecerá en su próxima visita.</li>
+          </ul>)}
+      </div>
+
+      <div style={{ ...tarjeta, display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:10 }}>
+        <label><span style={etiqueta}>Kilometraje</span>
+          <input inputMode="numeric" disabled={!editable} value={r && r.km != null ? String(r.km) : ""} onChange={e => ponerCampo("km", limpiarNumero(e.target.value) || null)} placeholder="Ej. 21021" style={entradaRev} /></label>
+        <label><span style={etiqueta}>Técnico que revisó</span>
+          <input disabled={!editable} value={r ? r.tecnico : (o.tecnico || "")} onChange={e => ponerCampo("tecnico", e.target.value.slice(0, 150))} placeholder="Nombre" style={entradaRev} /></label>
+        <label><span style={etiqueta}>Fecha de la revisión</span>
+          <input type="date" disabled={!editable} max={hoyLocal()} value={r ? r.fecha : hoy()} onChange={e => { if (e.target.value) ponerCampo("fecha", e.target.value); }} style={entradaRev} /></label>
+      </div>
+
+      <div style={{ padding:"0 2px" }}><LeyendaSemaforo /></div>
+      <div style={{ ...(ancho ? { columnCount:2, columnGap:12 } : {}), marginBottom:-12 }}>{seccionesUI}</div>
+
+      <SeccionRev id="inventario" titulo="Inventario de accesorios" items={[]} datos={datos} editable={editable} mb={0}
+        conteo={{ hechos: INVENTARIO.filter(it => datos["i." + it.k]).length, total: INVENTARIO.length }} abierta={abierta("inventario")} onAlternar={() => alternar("inventario")}>
+        <div style={{ paddingTop:10 }}><InventarioRev datos={datos} editable={editable} ponerDatos={ponerDatos} /></div>
+      </SeccionRev>
+
+      <div style={tarjeta}>
+        <label><span style={etiqueta}>Observaciones</span>
+          <textarea disabled={!editable} value={datos["t.obs"] || ""} onChange={e => ponerDato("t.obs", e.target.value.slice(0, 1500) || undefined)} rows={3} placeholder="Golpes, rayones, testigos encendidos en el tablero, lo que el cliente comentó…" style={{ ...entradaRev, resize:"vertical", lineHeight:1.45 }} /></label>
+        <details style={{ marginTop:10 }} open={!!(datos["t.causa"] || datos["t.condicion"] || datos["t.remedio"])}>
+          <summary style={{ fontSize:12.5, fontWeight:700, color:BRAND.text, cursor:"pointer" }}>Causa, condición y remedio (C.C.R.)</summary>
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+            {[["t.causa", "Causa"], ["t.condicion", "Condición"], ["t.remedio", "Remedio"]].map(([k, l]) => (
+              <label key={k}><span style={etiqueta}>{l}</span><textarea disabled={!editable} rows={2} value={datos[k] || ""} onChange={e => ponerDato(k, e.target.value.slice(0, 800) || undefined)} style={{ ...entradaRev, resize:"vertical" }} /></label>))}
+          </div>
+        </details>
+      </div>
+
+      <div style={tarjeta}>
+        <div style={tituloTarjeta}>Próxima cita</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(160px, 1fr))", gap:10, alignItems:"end" }}>
+          <label><span style={etiqueta}>Fecha sugerida</span>
+            <input type="date" disabled={!editable} min={hoyLocal()} value={(r && r.proximaCita) || ""} onChange={e => ponerCampo("proximaCita", e.target.value)} style={entradaRev} /></label>
+          <label><span style={etiqueta}>O a los (km)</span>
+            <input inputMode="numeric" disabled={!editable} value={datos["prox_km"] || ""} onChange={e => ponerDato("prox_km", limpiarNumero(e.target.value) || undefined)} placeholder="Ej. 31000" style={entradaRev} /></label>
+        </div>
+        {editable && (
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:8 }}>
+            {[[90, "En 3 meses"], [180, "En 6 meses"], [365, "En 1 año"]].map(([d, l]) => <button key={d} type="button" onClick={() => ponerCampo("proximaCita", sumarDias(hoyLocal(), d))} style={{ ...botonRev("claro"), padding:"5px 10px", fontSize:11.5 }}>{l}</button>)}
+            {r && r.km != null && [5000, 10000].map(n => <button key={n} type="button" onClick={() => ponerDato("prox_km", String(r.km + n))} style={{ ...botonRev("claro"), padding:"5px 10px", fontSize:11.5 }}>+{n.toLocaleString("es-MX")} km</button>)}
+          </div>)}
+      </div>
+
+      <section data-seccion="sugerencias" style={{ ...tarjeta, scrollMarginTop:170 }}>
+        <div style={tituloTarjeta}>Servicios sugeridos</div>
+        <div style={{ fontSize:11.5, color:BRAND.muted, marginTop:-4, marginBottom:8 }}>Salen solos de lo amarillo y lo rojo. Anota el precio y lo que respondió el cliente.</div>
+        <ServiciosSugeridos datos={datos} editable={editable} ponerDatos={ponerDatos} onDecision={decidir} />
+      </section>
+
+      <section data-seccion="compartir" style={{ ...tarjeta, scrollMarginTop:170 }}>
+        <div style={tituloTarjeta}>Enviar el reporte al cliente</div>
+        {!r ? <div style={{ fontSize:12, color:BRAND.muted }}>Empieza la revisión para poder enviarla.</div> : (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {revs.esDemo
+              ? <div style={{ fontSize:12, color:BRAND.muted }}>En el modo demostración no se crean enlaces; puedes enviar el resumen por WhatsApp.</div>
+              : listo ? (
+                <div style={{ background:BRAND.bg, borderRadius:10, padding:"0.6rem 0.75rem", display:"flex", flexDirection:"column", gap:8 }}>
+                  <div style={{ fontSize:12, color:BRAND.text }}>Con este enlace el cliente ve el diagrama, lo que se encontró y lo recomendado, desde su celular. Funciona hasta el {fechaConAnio(r.enlaceVence)}.</div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+                    <code style={{ flex:"1 1 200px", minWidth:0, fontSize:11, background:"#fff", border:"1px solid " + BRAND.border, borderRadius:8, padding:"6px 8px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{url}</code>
+                    <button type="button" onClick={() => copiar(url, "enlace")} style={{ ...botonRev("claro"), padding:"6px 10px" }}>{copiado === "enlace" ? "✓ Copiado" : "Copiar enlace"}</button>
+                    <a href={url} target="_blank" rel="noopener noreferrer" style={{ ...botonRev("claro"), padding:"6px 10px" }}>Ver como cliente</a>
+                  </div>
+                  {editable && <button type="button" onClick={quitarEnlace} style={{ alignSelf:"flex-start", background:"none", border:"none", color:BRAND.muted, fontSize:11.5, textDecoration:"underline", cursor:"pointer", padding:0 }}>Desactivar enlace</button>}
+                </div>
+              ) : editable ? (
+                <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                  <button type="button" onClick={prepararEnlace} disabled={preparando || g === "rechazado"} style={{ ...botonRev("claro"), opacity:preparando ? 0.6 : 1 }}>{preparando || (r.enlace && g !== "guardado") ? "Preparando enlace…" : "🔗 Crear enlace del reporte"}</button>
+                  <span style={{ fontSize:11.5, color:BRAND.muted, flex:"1 1 200px" }}>Así el cliente ve el reporte con el diagrama en su celular. Solo lo abre quien tenga el enlace.</span>
+                </div>
+              ) : null}
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+              {tel
+                ? <a href={"https://wa.me/" + tel + "?text=" + encodeURIComponent(mensaje)} target="_blank" rel="noopener noreferrer" style={botonRev("wa")}>💬 Enviar por WhatsApp{listo ? " con el enlace" : ""}</a>
+                : <span style={{ fontSize:12, color:BRAND.muted }}>Agrega el teléfono del cliente en la orden para mandarlo por WhatsApp.</span>}
+              <button type="button" onClick={() => copiar(mensaje, "mensaje")} style={botonRev("claro")}>{copiado === "mensaje" ? "✓ Mensaje copiado" : "Copiar mensaje"}</button>
+              <button type="button" onClick={() => imprimir("reporte")} style={botonRev("claro")}>🖨 Reporte PDF</button>
+            </div>
+          </div>)}
+      </section>
+
+      {historial.length > 0 && (
+        <div style={tarjeta}>
+          <div style={tituloTarjeta}>Historial de este vehículo <span style={{ fontSize:11.5, color:BRAND.muted, fontWeight:600 }}>({historial.length} revisi{historial.length === 1 ? "ón" : "ones"} más)</span></div>
+          {historial.map(x => <FilaHistorialRev key={x.id} r={x} onVer={rv => imprimir("reporte", rv)} />)}
+        </div>)}
+
+      {editable && r && (
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", justifyContent:"space-between", alignItems:"center" }}>
+          {r.estado !== "terminada"
+            ? <button type="button" onClick={terminar} style={{ ...botonRev("verde"), padding:"10px 16px", fontSize:13.5 }}>✓ Terminar revisión</button>
+            : <button type="button" onClick={() => ponerCampo("estado", "borrador")} style={botonRev("claro")}>Reabrir revisión</button>}
+          {puedePerm(usuario, "todo") && <button type="button" onClick={eliminar} style={{ ...botonRev("peligro"), padding:"7px 12px", fontSize:11.5 }}>Eliminar revisión</button>}
+        </div>)}
+      {portal}
+    </div>
+  );
+}
+
+// ─── Impresión: vista previa en hojas carta y «Guardar como PDF» del navegador ─
+// La vista previa se dibuja fuera de la app (portal en <body>); al imprimir se oculta todo lo demás.
+const CSS_IMPRESION = `
+.rx-print-root{font-family:${FUENTE_APP};color:#1D2733}
+.rx-hoja{background:#fff;color:#1D2733;width:8.5in;min-height:11in;margin:0 auto 18px;padding:0.45in 0.5in;box-sizing:border-box;box-shadow:0 10px 30px rgba(0,0,0,.28);font-size:9.5pt;line-height:1.35}
+.rx-hoja *,.rx-web *{box-sizing:border-box}
+.rx-evitar{break-inside:avoid;page-break-inside:avoid}
+@media print{
+  @page{size:letter;margin:0.4in}
+  html,body{background:#fff!important;height:auto!important;overflow:visible!important}
+  body.rx-imprimiendo>*:not(.rx-print-root){display:none!important}
+  .rx-print-root{position:static!important;inset:auto!important;overflow:visible!important;background:none!important;z-index:auto!important}
+  .rx-print-barra{display:none!important}
+  .rx-print-hojas{padding:0!important;zoom:1!important}
+  .rx-hoja{width:auto!important;min-height:0!important;margin:0!important;padding:0!important;box-shadow:none!important}
+  .rx-hoja+.rx-hoja{break-before:page;page-break-before:always}
+  .rx-print-root *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+}`;
+const instalarCssImpresion = () => {
+  if (typeof document === "undefined" || document.getElementById("rx-impresion-css")) return;
+  const e = document.createElement("style"); e.id = "rx-impresion-css"; e.textContent = CSS_IMPRESION; document.head.appendChild(e);
+};
+
+function VistaImpresion({ titulo, onCerrar, children }) {
+  const [zoom, setZoom] = useState(1);
+  useEffect(() => {
+    instalarCssImpresion();
+    document.body.classList.add("rx-imprimiendo");
+    const overflowPrevio = document.body.style.overflow, tituloPrevio = document.title;
+    document.body.style.overflow = "hidden";
+    if (titulo) document.title = titulo;                    // el navegador lo propone como nombre del PDF
+    const ajustar = () => setZoom(Math.min(1, Math.max(0.3, (window.innerWidth - 24) / 816)));
+    const tecla = e => { if (e.key === "Escape") onCerrar(); };
+    ajustar();
+    window.addEventListener("resize", ajustar);
+    window.addEventListener("keydown", tecla);
+    return () => {
+      document.body.classList.remove("rx-imprimiendo");
+      document.body.style.overflow = overflowPrevio; document.title = tituloPrevio;
+      window.removeEventListener("resize", ajustar); window.removeEventListener("keydown", tecla);
+    };
+  }, []);
+  const boton = { display:"inline-flex", alignItems:"center", gap:6, borderRadius:9, padding:"8px 14px", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit", border:"none" };
+  return createPortal(
+    <div className="rx-print-root" role="dialog" aria-modal="true" aria-label={titulo}
+      style={{ position:"fixed", inset:0, zIndex:1000, background:"rgba(29,39,51,0.62)", overflowY:"auto", WebkitOverflowScrolling:"touch" }}>
+      <div className="rx-print-barra" style={{ position:"sticky", top:0, zIndex:2, display:"flex", gap:10, alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", padding:"10px 14px", background:"#1D2733", color:"#fff", boxShadow:"0 2px 10px rgba(0,0,0,.3)" }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontSize:13.5, fontWeight:800, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{titulo}</div>
+          <div style={{ fontSize:11, color:"#C8D2E0" }}>Para el PDF, elige «Guardar como PDF» en la impresora.</div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button type="button" onClick={() => window.print()} style={{ ...boton, background:BRAND.accent, color:"#fff" }}>🖨 Imprimir o guardar PDF</button>
+          <button type="button" onClick={onCerrar} style={{ ...boton, background:"#fff", color:"#1D2733" }}>Cerrar</button>
+        </div>
+      </div>
+      <div className="rx-print-hojas" style={{ padding:"16px 12px 48px", zoom }}>{children}</div>
+    </div>,
+    document.body
+  );
+}
+
+// ─── Reporte para el cliente ──────────────────────────────────────────────────
+// Se usa igual en la hoja impresa (tamaño en pt) y en la página del enlace (tamaño de pantalla):
+// todas las medidas internas van en «em».
+const logoSeguro = u => typeof u === "string" && /^(data:image\/(png|jpe?g|webp|gif|svg\+xml);|https:\/\/)/i.test(u);
+const ETAPA_CLIENTE = { presupuesto:"Diagnóstico y presupuesto", mecanica:"Mecánica", hojalateria:"Hojalatería", pintura:"Pintura", armado:"Armado y detalles finales" };
+
+function EncabezadoReporte({ taller, titulo, sub, angosto }) {
+  return (
+    <div style={{ display:"flex", alignItems:angosto ? "flex-start" : "center", justifyContent:"space-between", gap:"1em", flexDirection:angosto ? "column" : "row", borderBottom:"2px solid #1D2733", paddingBottom:"0.7em" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:"0.7em", minWidth:0 }}>
+        {logoSeguro(taller.logo) && <img src={taller.logo} alt="" style={{ width:"3.6em", height:"3.6em", objectFit:"contain", borderRadius:6, flexShrink:0 }} />}
+        <div style={{ fontSize:"1.55em", fontWeight:800, lineHeight:1.15 }}>{taller.nombre || "Taller"}</div>
+      </div>
+      <div style={{ textAlign:angosto ? "left" : "right" }}>
+        <div style={{ fontSize:"1.3em", fontWeight:800, lineHeight:1.2 }}>{titulo}</div>
+        {sub && <div style={{ fontSize:"0.92em", color:"#5A6B7F", marginTop:"0.15em" }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+function DatoReporte({ l, v }) {
+  return <div style={{ minWidth:0 }}><div style={{ fontSize:"0.8em", color:"#5A6B7F", fontWeight:700 }}>{l}</div><div style={{ fontWeight:700, overflowWrap:"anywhere" }}>{v || "—"}</div></div>;
+}
+function MarcaDetalle({ e, texto }) {
+  const c = colorSem(e);
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", gap:"0.35em", fontWeight:700, color:c === SEM_VACIO ? "#8794A6" : c.texto, whiteSpace:"nowrap" }}>
+      <span aria-hidden="true" style={{ width:"0.85em", height:"0.85em", borderRadius:"0.18em", background:c === SEM_VACIO ? "#fff" : c.color, border:"1px solid " + (c === SEM_VACIO ? "#C8D2E0" : c.color), flexShrink:0 }} />{texto}
+    </span>
+  );
+}
+function SeguimientoOrden({ s, fechaRevision }) {
+  if (!s) return null;
+  const caja = (fondo, borde) => ({ background:fondo, border:"1px solid " + borde, borderRadius:12, padding:"0.8em 1em" });
+  if (s.etapa === "concluida") return <div style={caja("#F3F6F9", "#C8D2E0")}><div style={{ fontWeight:800, fontSize:"1.1em" }}>Servicio concluido</div><div style={{ fontSize:"0.9em", color:"#5A6B7F" }}>Gracias por tu visita. Abajo está la revisión que hicimos{fechaRevision ? " el " + fechaConAnio(fechaRevision) : ""}.</div></div>;
+  if (s.etapa === "lista") return <div style={caja(SEM.v.fondo, SEM.v.color)}><div style={{ fontWeight:800, fontSize:"1.15em", color:SEM.v.texto }}>✓ Tu vehículo está listo</div><div style={{ fontSize:"0.9em", color:"#1D2733" }}>Comunícate con el taller para recogerlo.</div></div>;
+  const idx = Math.max(0, PASOS.indexOf(s.estado));
+  return (
+    <div style={caja("#FFFFFF", "#C8D2E0")}>
+      <div style={{ fontSize:"0.85em", color:"#5A6B7F", fontWeight:700 }}>Tu vehículo está en</div>
+      <div style={{ fontWeight:800, fontSize:"1.25em", color:BRAND.accent }}>{ETAPA_CLIENTE[s.estado] || ESTADOS[idx].label}</div>
+      <div style={{ display:"flex", gap:"0.25em", marginTop:"0.6em" }}>
+        {ESTADOS.map((e, i) => (
+          <div key={e.key} style={{ flex:1, minWidth:0 }}>
+            <div style={{ height:"0.4em", borderRadius:"0.4em", background:i < idx ? BRAND.accent : i === idx ? BRAND.accent + "88" : "#DCE3EC" }} />
+            <div style={{ fontSize:"0.7em", marginTop:"0.25em", color:i === idx ? BRAND.accent : "#5A6B7F", fontWeight:i === idx ? 800 : 500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textAlign:"center" }}>{e.label}</div>
+          </div>))}
+      </div>
+      {s.entrega && <div style={{ marginTop:"0.6em", fontSize:"0.95em" }}>Entrega estimada: <b>{conMayuscula(fechaLarga(s.entrega))}</b></div>}
+    </div>
+  );
+}
+const resumenDe = r => (r.resumen && r.resumen.total ? r.resumen : resumenRevision(r.datos));
+
+function ReporteResumen({ rev, taller, previa, historial, seguimiento, angosto, saludo, web }) {
+  const d = rev.datos || {}, res = resumenRevision(d), tit = titularRevision(res, true);
+  const hall = hallazgosDe(d), sugs = sugerenciasDe(d);
+  const cambios = previa ? cambiosEntreVisitas(previa.datos, d) : [];
+  const kmDesde = rev.km != null && previa && previa.km != null && rev.km >= previa.km ? rev.km - previa.km : null;
+  const autorizado = sugs.filter(s => s.decision === "aceptada").reduce((t, s) => t + s.precio, 0);
+  const recomendado = sugs.filter(s => s.decision !== "rechazada").reduce((t, s) => t + s.precio, 0);
+  const proxKm = d["prox_km"];
+  const h3 = { fontSize:"1.2em", fontWeight:800, margin:"0 0 0.45em" };
+  const c = tit.sem ? SEM[tit.sem] : null;
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"0.75em" }}>
+      <EncabezadoReporte taller={taller} titulo="Revisión de puntos de cortesía" angosto={angosto}
+        sub={[rev.ordenId && "Orden " + rev.ordenId, conMayuscula(fechaConAnio(rev.fecha))].filter(Boolean).join(" · ")} />
+      {saludo && <div style={{ fontSize:"1.15em" }}>Hola{primerNombre(rev.cliente) ? " " + primerNombre(rev.cliente) : ""}, esto encontramos al revisar tu {textoVehiculo(rev.vehiculo) || "vehículo"}.</div>}
+      {seguimiento && <SeguimientoOrden s={seguimiento} fechaRevision={rev.fecha} />}
+      <div style={{ display:"grid", gridTemplateColumns:angosto ? "1fr 1fr" : "repeat(4, minmax(0, 1fr))", gap:"0.6em 1em", background:"#F3F6F9", borderRadius:10, padding:"0.7em 0.9em" }}>
+        <DatoReporte l="Cliente" v={rev.cliente} /><DatoReporte l="Vehículo" v={textoVehiculo(rev.vehiculo)} /><DatoReporte l="Placas" v={rev.placa} /><DatoReporte l="Color" v={rev.color} />
+        <DatoReporte l="Kilometraje" v={rev.km != null ? rev.km.toLocaleString("es-MX") + " km" : ""} />
+        {rev.serie ? <DatoReporte l="VIN" v={rev.serie} /> : <DatoReporte l="Fecha" v={fechaCortaAnio(rev.fecha)} />}
+        <DatoReporte l="Técnico" v={rev.tecnico} /><DatoReporte l="Asesor" v={rev.asesor} />
+      </div>
+      <div className="rx-evitar" style={{ display:"grid", gridTemplateColumns:angosto ? "1fr" : "1fr auto", gap:"0.8em 1.4em", alignItems:"center", background:c ? c.fondo : "#F3F6F9", border:"1px solid " + (c ? c.color + "66" : "#C8D2E0"), borderRadius:12, padding:"0.85em 1em" }}>
+        <div>
+          <div style={{ fontSize:"1.55em", fontWeight:800, lineHeight:1.2, color:c ? c.texto : "#1D2733" }}>{tit.texto}</div>
+          <div style={{ marginTop:"0.55em" }}><BarraSemaforo res={res} alto={10} /></div>
+        </div>
+        <ConteosSemaforo res={res} chico />
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:angosto ? "1fr" : "auto minmax(0, 1fr)", gap:angosto ? "0.8em" : "1.8em", alignItems:"start" }}>
+        <div className="rx-evitar" style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"0.4em" }}>
+          <DiagramaVehiculo datos={d} ancho={angosto ? 176 : 138} />
+          <div style={{ fontSize:"0.78em", color:"#5A6B7F", textAlign:"center", maxWidth:"14em", lineHeight:1.3 }}>Vista desde arriba (el frente arriba). En cada rueda: la llanta y, al centro, las balatas.</div>
+        </div>
+        <div style={{ minWidth:0 }}>
+          <h3 style={{ ...h3, breakAfter:"avoid", pageBreakAfter:"avoid" }}>Lo que encontramos</h3>
+          {!hall.length
+            ? <div style={{ color:"#5A6B7F" }}>{res.revisados ? "No encontramos nada que requiera atención." : "La revisión aún no tiene puntos marcados."}</div>
+            : <div style={{ display:"grid", gridTemplateColumns:!angosto && hall.length > 5 ? "1fr 1fr" : "1fr", gap:"0.45em 1.2em" }}>
+                {hall.map(({ it, v }) => { const nota = notaPunto(d, it.k); return (
+                  <div key={it.k} className="rx-evitar" style={{ display:"flex", gap:"0.55em", alignItems:"flex-start" }}>
+                    <span style={{ marginTop:"0.2em" }}><PuntoSem e={v} tam={12} /></span>
+                    <div style={{ minWidth:0 }}>
+                      <div><b>{it.l}</b>{it.tipo === "llanta" || it.tipo === "freno" ? <span style={{ color:SEM[v].texto, fontWeight:600 }}> · {descripcionValor(it, v)}</span> : null}</div>
+                      <div style={{ fontSize:"0.88em", color:SEM[v].texto, fontWeight:600 }}>{SEM[v].label}{nota ? <span style={{ color:"#1D2733", fontWeight:500 }}> — {nota}</span> : null}</div>
+                    </div>
+                  </div>); })}
+                {res.v > 0 && <div style={{ display:"flex", gap:"0.55em", alignItems:"center", color:SEM.v.texto, fontWeight:700, marginTop:"0.15em", gridColumn:"1 / -1" }}><PuntoSem e="v" tam={12} />{res.v} punto{res.v === 1 ? "" : "s"} más en buen estado</div>}
+              </div>}
+        </div>
+      </div>
+      {sugs.length > 0 && (
+        <div className={sugs.length <= 8 ? "rx-evitar" : undefined}>
+          <h3 style={{ ...h3, breakAfter:"avoid", pageBreakAfter:"avoid" }}>Te recomendamos</h3>
+          <div style={{ border:"1px solid #C8D2E0", borderRadius:10, overflow:"hidden" }}>
+            {sugs.map((s, i) => {
+              const dc = DECISIONES.find(x => x.k === s.decision);
+              const respuesta = <span style={{ fontSize:"0.9em", color:dc ? dc.texto : "#8794A6", fontWeight:700 }}>{dc ? (dc.k === "aceptada" ? "✓ Autorizado" : dc.k === "despues" ? "Para después" : "No autorizado") : "Por confirmar"}</span>;
+              const urgencia = <MarcaDetalle e={URGENCIAS[s.urg].sem} texto={URGENCIAS[s.urg].l} />;
+              const estiloFila = { padding:"0.36em 0.8em", borderTop:i ? "1px solid #E3E8EF" : "none", background:s.decision === "rechazada" ? "#F7F9FB" : "#fff", breakInside:"avoid", pageBreakInside:"avoid" };
+              return angosto ? (
+                <div key={s.k} style={{ ...estiloFila, display:"flex", flexDirection:"column", gap:"0.25em" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", gap:"0.8em" }}><b>{s.texto}</b><b style={{ whiteSpace:"nowrap" }}>{s.precio ? dinero(s.precio) : ""}</b></div>
+                  <div style={{ display:"flex", gap:"0.9em", flexWrap:"wrap", alignItems:"center" }}>{urgencia}{respuesta}</div>
+                </div>
+              ) : (
+                <div key={s.k} style={{ ...estiloFila, display:"grid", gridTemplateColumns:"1fr 7.5em 8.5em 6.5em", gap:"0.8em", alignItems:"center" }}>
+                  <b>{s.texto}</b>{urgencia}{respuesta}<b style={{ textAlign:"right" }}>{s.precio ? dinero(s.precio) : ""}</b>
+                </div>);
+            })}
+            {(recomendado > 0 || autorizado > 0) && (
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:"0.2em 1.6em", flexWrap:"wrap", padding:"0.55em 0.8em", background:"#F3F6F9", borderTop:"1px solid #C8D2E0" }}>
+                {recomendado > 0 && <span>Total recomendado: <b>{dinero(recomendado)}</b></span>}
+                {autorizado > 0 && <span style={{ color:SEM.v.texto }}>Autorizado: <b>{dinero(autorizado)}</b></span>}
+              </div>)}
+          </div>
+        </div>)}
+      {((previa && (cambios.length > 0 || kmDesde !== null)) || (historial && historial.length > 0)) && (
+      <div style={{ display:"grid", gridTemplateColumns:angosto || !(previa && historial && historial.length) ? "1fr" : "1fr 1fr", gap:"1em 1.8em", alignItems:"start" }}>
+      {previa && (cambios.length > 0 || kmDesde !== null) && (
+        <div className="rx-evitar">
+          <h3 style={h3}>Desde tu visita del {fechaConAnio(previa.fecha)}{kmDesde !== null ? ` (+${kmDesde.toLocaleString("es-MX")} km)` : ""}</h3>
+          {!cambios.length ? <div style={{ color:"#5A6B7F" }}>Todo sigue igual que en esa revisión.</div> : (
+            <div style={{ display:"flex", flexDirection:"column", gap:"0.35em" }}>
+              {cambios.slice(0, 8).map(x => (
+                <div key={x.it.k} style={{ display:"flex", alignItems:"center", gap:"0.45em", flexWrap:"wrap" }}>
+                  <b style={{ color:x.mejora ? SEM.v.texto : SEM.r.texto }}>{x.mejora ? "▲ Mejoró" : "▼ Empeoró"}</b><span>{x.it.l}:</span>
+                  <PuntoSem e={x.a} tam={10} /><span aria-hidden="true" style={{ color:"#5A6B7F" }}>→</span><PuntoSem e={x.b} tam={10} />
+                </div>))}
+            </div>)}
+        </div>)}
+      {historial && historial.length > 0 && (
+        <div className="rx-evitar">
+          <h3 style={h3}>Historial de revisiones de tu vehículo</h3>
+          <div style={{ display:"flex", flexDirection:"column", gap:"0.35em" }}>
+            {historial.slice(0, 6).map((h, i) => { const rh = resumenDe(h); return (
+              <div key={h.id || i} style={{ display:"grid", gridTemplateColumns:"8.5em minmax(0, 1fr) auto", gap:"0.3em 0.8em", alignItems:"center" }}>
+                <div style={{ fontWeight:700 }}>{fechaCortaAnio(h.fecha)}{h.km != null ? <div style={{ color:"#5A6B7F", fontWeight:500, fontSize:"0.88em" }}>{h.km.toLocaleString("es-MX")} km</div> : null}</div>
+                <BarraSemaforo res={rh} alto={8} />
+                <div style={{ display:"flex", gap:"0.7em", fontWeight:700, fontSize:"0.92em" }}>
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:"0.25em" }}><PuntoSem e="r" tam={9} />{rh.r || 0}</span>
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:"0.25em" }}><PuntoSem e="a" tam={9} />{rh.a || 0}</span>
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:"0.25em" }}><PuntoSem e="v" tam={9} />{rh.v || 0}</span>
+                </div>
+              </div>); })}
+          </div>
+        </div>)}
+      </div>)}
+      {(rev.proximaCita || proxKm) && (
+        <div className="rx-evitar" style={{ background:"#F2F6FF", border:"1px solid #C9D8FB", borderRadius:10, padding:"0.7em 0.9em" }}>
+          <b>Próxima cita sugerida:</b> {[rev.proximaCita && conMayuscula(fechaConAnio(rev.proximaCita)), proxKm && `a los ${Number(proxKm).toLocaleString("es-MX")} km`].filter(Boolean).join(" o ")}
+        </div>)}
+      <div style={{ borderTop:"1px solid #C8D2E0", paddingTop:"0.6em", display:"flex", justifyContent:"space-between", gap:"1em", flexWrap:"wrap", alignItems:"center" }}>
+        <LeyendaSemaforo chico />
+        {!web && <span style={{ fontSize:"0.8em", color:"#8794A6" }}>Reporte hecho con RepairX</span>}
+      </div>
+    </div>
+  );
+}
+
+function ReporteDetalle({ rev, taller, angosto, sinEncabezado }) {
+  const d = rev.datos || {};
+  const h4 = { fontWeight:800, fontSize:"1.05em", borderBottom:"1px solid #C8D2E0", paddingBottom:"0.2em", marginBottom:"0.3em" };
+  const textos = [["t.obs", "Observaciones"], ["t.causa", "Causa"], ["t.condicion", "Condición"], ["t.remedio", "Remedio"]].filter(([k]) => String(d[k] || "").trim());
+  const comb = COMBUSTIBLE.find(c => c.k === d["comb"]);
+  const marcados = INVENTARIO.filter(it => d["i." + it.k]);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:"1em" }}>
+      {!sinEncabezado && <EncabezadoReporte taller={taller} titulo="Detalle de la revisión" angosto={angosto}
+        sub={[rev.ordenId && "Orden " + rev.ordenId, textoVehiculo(rev.vehiculo), rev.placa, fechaCortaAnio(rev.fecha)].filter(Boolean).join(" · ")} />}
+      <div style={{ columnCount:angosto ? 1 : 2, columnGap:"1.8em" }}>
+        {REV_SECCIONES.filter(s => s.tipo !== "ruedas").map(s => (
+          <div key={s.k} className="rx-evitar" style={{ marginBottom:"0.9em", breakInside:"avoid" }}>
+            <div style={h4}>{s.t}</div>
+            {s.items.map(it => { const v = valorPunto(d, it.k), nota = notaPunto(d, it.k); return (
+              <div key={it.k} style={{ padding:"0.2em 0", borderBottom:"0.5px dotted #DCE3EC" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"0.6em" }}>
+                  <span style={{ minWidth:0 }}>{it.l}</span>
+                  <MarcaDetalle e={v} texto={v ? (s.tipo === "niveles" && NIVELES[v] ? NIVELES[v] : SEM[v].corto) : "—"} />
+                </div>
+                {nota && (v === "a" || v === "r") && <div style={{ fontSize:"0.88em", color:"#5A6B7F" }}>{nota}</div>}
+              </div>); })}
+          </div>))}
+      </div>
+      <div className="rx-evitar">
+        <div style={h4}>Llantas y frenos</div>
+        <div style={{ display:"grid", gridTemplateColumns:angosto ? "1fr 1fr" : "repeat(4, minmax(0, 1fr))", gap:"0.6em 1em" }}>
+          {RUEDAS.map(rd => { const vl = valorPunto(d, "llanta_" + rd.k), vf = valorPunto(d, "freno_" + rd.k); return (
+            <div key={rd.k} style={{ display:"flex", flexDirection:"column", gap:"0.2em" }}>
+              <b>{rd.l}</b>
+              <span style={{ fontSize:"0.9em" }}>Llanta: <MarcaDetalle e={vl} texto={vl ? PISADA[vl] : "—"} /></span>
+              <span style={{ fontSize:"0.9em" }}>Presión: <b>{d["psi." + rd.k] ? d["psi." + rd.k] + " PSI" : "—"}</b></span>
+              <span style={{ fontSize:"0.9em" }}>Balatas: <MarcaDetalle e={vf} texto={vf ? BALATAS[vf] : "—"} /></span>
+              {d["desg." + rd.k] && <span style={{ fontSize:"0.9em", fontWeight:800, color:SEM.a.texto }}>Mayor desgaste</span>}
+            </div>); })}
+        </div>
+        <div style={{ display:"flex", gap:"0.5em 1.4em", flexWrap:"wrap", marginTop:"0.6em", fontSize:"0.95em" }}>
+          {CHECKS_RUEDAS.map(c => <span key={c.k}>{conMayuscula(c.l.replace("Necesita ", ""))}: <b>{d[c.k] ? "Sí, se recomienda" : "No"}</b></span>)}
+          <span>Sistema de frenado: <MarcaDetalle e={valorPunto(d, "frenado")} texto={valorPunto(d, "frenado") ? SEM[valorPunto(d, "frenado")].corto : "—"} /></span>
+        </div>
+      </div>
+      <div className="rx-evitar">
+        <div style={h4}>Inventario de accesorios{comb ? <span style={{ fontWeight:600, color:"#5A6B7F" }}> · Combustible: {comb.l}</span> : null}</div>
+        {!marcados.length ? <div style={{ color:"#8794A6" }}>Sin registrar.</div> : (
+          <div style={{ display:"grid", gridTemplateColumns:angosto ? "1fr 1fr" : "repeat(4, minmax(0, 1fr))", gap:"0.25em 1em", fontSize:"0.95em" }}>
+            {INVENTARIO.map(it => { const v = d["i." + it.k]; return (
+              <span key={it.k} style={{ color:v === "no" ? SEM.r.texto : v === "si" ? "#1D2733" : "#8794A6", fontWeight:v === "no" ? 800 : 500 }}>{v === "si" ? "✓" : v === "no" ? "✕ Falta:" : "—"} {it.l}</span>); })}
+          </div>)}
+      </div>
+      {textos.length > 0 && (
+        <div className="rx-evitar" style={{ display:"flex", flexDirection:"column", gap:"0.45em" }}>
+          {textos.map(([k, l]) => <div key={k}><b>{l}:</b> <span style={{ whiteSpace:"pre-wrap" }}>{d[k]}</span></div>)}
+        </div>)}
+      {!sinEncabezado && (
+        <div className="rx-evitar" style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:"1.6em", marginTop:"1.6em" }}>
+          {[["Técnico", rev.tecnico], ["Control de calidad", ""], ["Cliente", rev.cliente]].map(([l, n]) => (
+            <div key={l} style={{ textAlign:"center" }}>
+              <div style={{ borderTop:"1px solid #1D2733", paddingTop:"0.3em", fontWeight:700 }}>{l}</div>
+              {n && <div style={{ fontSize:"0.85em", color:"#5A6B7F" }}>{n}</div>}
+            </div>))}
+        </div>)}
+      {!sinEncabezado && <div style={{ borderTop:"1px solid #C8D2E0", paddingTop:"0.6em" }}><LeyendaSemaforo chico /></div>}
+    </div>
+  );
+}
+
+function HojasReporte({ rev, taller, previa, historial, seguimiento }) {
+  return (<>
+    <div className="rx-hoja"><ReporteResumen rev={rev} taller={taller} previa={previa} historial={historial} seguimiento={seguimiento} /></div>
+    <div className="rx-hoja"><ReporteDetalle rev={rev} taller={taller} /></div>
+  </>);
+}
+
+// ─── Formato en blanco para llenar a mano (una hoja carta) ────────────────────
+function FormatoEnBlanco({ taller }) {
+  const caja = (c, extra) => <span aria-hidden="true" style={{ display:"inline-block", width:"1.15em", height:"1.15em", border:"1.3px solid " + c, borderRadius:"0.2em", background:c + "26", flexShrink:0, ...(extra || {}) }} />;
+  const tres = <span style={{ display:"inline-flex", gap:"0.3em", flexShrink:0 }}>{caja(SEM.v.color)}{caja(SEM.a.color)}{caja(SEM.r.color)}</span>;
+  const neutra = caja("#5A6B7F");
+  const linea = (l, flex = 1) => (
+    <div style={{ display:"flex", alignItems:"flex-end", gap:"0.4em", flex, minWidth:0 }}>
+      <span style={{ whiteSpace:"nowrap", fontWeight:700 }}>{l}</span><span style={{ flex:1, borderBottom:"1px solid #1D2733", height:"1.3em", minWidth:"3em" }} />
+    </div>);
+  const titulo = t => <div style={{ fontWeight:800, fontSize:"1.12em", background:"#1D2733", color:"#fff", padding:"0.2em 0.55em", borderRadius:"0.3em", marginBottom:"0.35em" }}>{t}</div>;
+  const fila = (texto, clave, opcs) => (
+    <div key={clave || texto} style={{ display:"flex", alignItems:"center", gap:"0.55em", padding:"0.19em 0", borderBottom:"0.5px solid #DCE3EC" }}>
+      {opcs || tres}<span style={{ minWidth:0 }}>{texto}</span>
+    </div>);
+  const sec = k => REV_SECCIONES.find(s => s.k === k);
+  const bloque = k => { const s = sec(k); return (
+    <div style={{ marginBottom:"0.55em" }}>{titulo(s.t)}{s.items.map(it => fila(it.l + (it.opc && !/si /i.test(it.l) ? " (si aplica)" : ""), it.k))}</div>); };
+  const rueda = rd => (
+    <div style={{ border:"1px solid #8794A6", borderRadius:"0.4em", padding:"0.35em 0.45em", display:"flex", flexDirection:"column", gap:"0.2em" }}>
+      <b>{rd.l}</b>
+      <span style={{ fontSize:"0.9em", color:"#5A6B7F", fontWeight:700 }}>Llanta</span>
+      {["v", "a", "r"].map(k => <span key={k} style={{ display:"flex", alignItems:"center", gap:"0.35em" }}>{caja(SEM[k].color)}{PISADA[k]}</span>)}
+      <span style={{ display:"flex", alignItems:"flex-end", gap:"0.3em" }}>PSI<span style={{ flex:1, borderBottom:"1px solid #1D2733", height:"1.1em" }} /></span>
+      <span style={{ fontSize:"0.9em", color:"#5A6B7F", fontWeight:700 }}>Balatas</span>
+      <span style={{ display:"flex", gap:"0.5em", flexWrap:"wrap" }}>{["v", "a", "r"].map(k => <span key={k} style={{ display:"inline-flex", alignItems:"center", gap:"0.25em" }}>{caja(SEM[k].color)}{BALATAS[k].replace(" o más", "+").replace(" o menos", "−")}</span>)}</span>
+      <span style={{ display:"flex", alignItems:"center", gap:"0.35em" }}>{neutra}Mayor desgaste</span>
+    </div>);
+  const general = sec("general").items;
+  return (
+    <div className="rx-hoja" style={{ fontSize:"7.8pt", lineHeight:1.24 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"1em", borderBottom:"2px solid #1D2733", paddingBottom:"0.5em", marginBottom:"0.6em" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"0.6em" }}>
+          {logoSeguro(taller.logo) && <img src={taller.logo} alt="" style={{ width:"4em", height:"4em", objectFit:"contain" }} />}
+          <div style={{ fontSize:"1.9em", fontWeight:800 }}>{taller.nombre || "Taller"}</div>
+        </div>
+        <div style={{ textAlign:"right" }}>
+          <div style={{ fontSize:"1.75em", fontWeight:800 }}>Revisión de puntos de cortesía</div>
+          <div style={{ fontSize:"0.95em", color:"#5A6B7F", marginTop:"0.15em" }}>Estimado cliente: esto encontró nuestro técnico al inspeccionar su vehículo.</div>
+        </div>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"0.45em", marginBottom:"0.6em" }}>
+        <div style={{ display:"flex", gap:"1.2em" }}>{linea("Nombre:", 2.2)}{linea("Año / Modelo:", 1.6)}{linea("Fecha:", 1)}</div>
+        <div style={{ display:"flex", gap:"1.2em" }}>{linea("No. de orden:", 1)}{linea("VIN:", 2.2)}{linea("Kilometraje:", 1.2)}</div>
+        <div style={{ display:"flex", gap:"1.2em" }}>{linea("Placas:", 1)}{linea("Color:", 1)}{linea("Técnico:", 1.6)}{linea("Asesor:", 1.4)}</div>
+      </div>
+      <div style={{ marginBottom:"0.55em" }}>
+        {titulo("Inventario de accesorios  ·  ✓ trae  ·  ✕ falta")}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(6, minmax(0, 1fr))", gap:"0.18em 0.6em" }}>
+          {INVENTARIO.map(it => <span key={it.k} style={{ display:"flex", alignItems:"flex-start", gap:"0.35em", minWidth:0 }}>{neutra}<span style={{ lineHeight:1.15 }}>{it.l}</span></span>)}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:"0.8em", marginTop:"0.35em" }}><b>Combustible:</b>{COMBUSTIBLE.map(c => <span key={c.k} style={{ display:"inline-flex", alignItems:"center", gap:"0.3em" }}>{neutra}{c.l}</span>)}</div>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"0.35em", marginBottom:"0.55em" }}>{linea("Observaciones:")}<span style={{ borderBottom:"1px solid #1D2733", height:"1.3em" }} /></div>
+      <div style={{ display:"flex", gap:"1.2em", alignItems:"center", marginBottom:"0.5em", flexWrap:"wrap" }}>
+        {["v", "a", "r"].map(k => <span key={k} style={{ display:"inline-flex", alignItems:"center", gap:"0.35em", fontWeight:700 }}>{caja(SEM[k].color)}{SEM[k].label}</span>)}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1.25fr", gap:"1.1em", alignItems:"start" }}>
+        <div>
+          {bloque("suspension")}
+          {bloque("limpiadores")}
+          {bloque("bateria")}
+          <div>{titulo("Niveles  ·  OK  /  Requiere atención")}{sec("niveles").items.map(it => fila(it.l + (it.opc && !/si /i.test(it.l) ? " (si aplica)" : ""), it.k, <span style={{ display:"inline-flex", gap:"0.3em" }}>{caja(SEM.v.color)}{caja(SEM.r.color)}</span>))}</div>
+        </div>
+        <div>
+          {titulo("Llantas y frenos")}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 4.6em 1fr", gap:"0.4em", alignItems:"center" }}>
+            {rueda(RUEDAS[0])}
+            <div style={{ gridRow:"1 / span 2", gridColumn:2, display:"flex", justifyContent:"center" }}><DiagramaVehiculo datos={{}} ancho={58} etiquetas={false} /></div>
+            {rueda(RUEDAS[1])}
+            {rueda(RUEDAS[2])}
+            {rueda(RUEDAS[3])}
+          </div>
+          <div style={{ display:"flex", gap:"0.9em", flexWrap:"wrap", margin:"0.4em 0" }}>{CHECKS_RUEDAS.map(c => <span key={c.k} style={{ display:"inline-flex", alignItems:"center", gap:"0.3em" }}>{neutra}{c.l}</span>)}</div>
+          {fila("Sistema de frenado (general)", "frenado")}
+        </div>
+      </div>
+      <div style={{ marginTop:"0.5em" }}>
+        {titulo("Revisión general")}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", columnGap:"1.2em" }}>
+          {general.map(it => fila(it.l, it.k))}
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:"1.2em", marginTop:"0.55em" }}>{linea("Próxima cita:", 1)}{linea("O a los (km):", 1)}</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:"0.4em", marginTop:"0.5em" }}>
+        <b>Causa, condición y remedio (C.C.R.)</b>
+        {linea("Causa:")}{linea("Condición:")}{linea("Remedio:")}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:"2em", marginTop:"1.9em" }}>
+        {["Técnico", "Control de calidad", "Firma del cliente"].map(l => <div key={l} style={{ borderTop:"1px solid #1D2733", paddingTop:"0.25em", textAlign:"center", fontWeight:700 }}>{l}</div>)}
+      </div>
+    </div>
+  );
+}
+
+// ─── Página que abre el cliente con el enlace (sin sesión) ───────────────────
+const claveReporteEnUrl = () => {
+  try { const c = new URLSearchParams(window.location.search).get("reporte"); return c && /^[A-Za-z0-9_-]{32,64}$/.test(c) ? c : ""; }
+  catch (_) { return ""; }
+};
+function ReportePublico({ clave }) {
+  const [estado, setEstado] = useState({ cargando: true });
+  const [intento, setIntento] = useState(0);
+  const [imprimir, setImprimir] = useState(false);
+  const angosto = !useMedia("(min-width: 720px)");
+  useEffect(() => {
+    const meta = document.createElement("meta"); meta.name = "robots"; meta.content = "noindex, nofollow"; document.head.appendChild(meta);
+    return () => meta.remove();
+  }, []);
+  useEffect(() => {
+    let vivo = true;
+    setEstado({ cargando: true });
+    pedirReportePublico(clave)
+      .then(d => { if (vivo) setEstado({ datos: d && d.revision ? d : null }); })
+      .catch(e => { if (vivo) setEstado({ error: e.codigo === "RED" ? "Revisa tu conexión a internet e inténtalo de nuevo." : "El servidor no respondió. Inténtalo de nuevo en unos minutos." }); });
+    return () => { vivo = false; };
+  }, [clave, intento]);
+  const d = estado.datos;
+  const taller = d ? { nombre: (d.taller && d.taller.nombre) || "Tu taller", logo: (d.taller && d.taller.logo) || "" } : null;
+  useEffect(() => { document.title = taller ? `Revisión de tu vehículo · ${taller.nombre}` : "Revisión de tu vehículo"; }, [taller && taller.nombre]);
+  const marco = hijos => (
+    <div style={{ minHeight:"100vh", background:BRAND.bg, fontFamily:FUENTE_APP, color:BRAND.text, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+      <div style={{ background:"#fff", border:"1px solid " + BRAND.border, borderRadius:16, padding:"24px 22px", maxWidth:420, textAlign:"center" }}>{hijos}</div>
+    </div>);
+  if (estado.cargando) return marco(<div style={{ fontSize:14, color:BRAND.muted }}>Cargando el reporte…</div>);
+  if (estado.error) return marco(<><div style={{ fontSize:16, fontWeight:800, marginBottom:6 }}>No pudimos abrir el reporte</div><div style={{ fontSize:13.5, color:BRAND.muted, marginBottom:14 }}>{estado.error}</div><button type="button" onClick={() => setIntento(n => n + 1)} style={botonRev("primario")}>Reintentar</button></>);
+  if (!d) return marco(<><div style={{ fontSize:16, fontWeight:800, marginBottom:6 }}>Este enlace ya no está disponible</div><div style={{ fontSize:13.5, color:BRAND.muted }}>Puede que haya vencido o que el taller lo haya desactivado. Pídele a tu taller uno nuevo.</div></>);
+  const rev = dbToRev({ ...d.revision, id: "reporte" });
+  const previa = d.previa ? dbToRev({ ...d.previa, id: "previa" }) : null;
+  const historial = (Array.isArray(d.historial) ? d.historial : []).map((h, i) => dbToRev({ ...h, id: "h" + i }));
+  return (
+    <div style={{ minHeight:"100vh", background:BRAND.bg, fontFamily:FUENTE_APP, color:BRAND.text }}>
+      <div style={{ maxWidth:780, margin:"0 auto", padding:angosto ? "12px 12px 28px" : "28px 20px 40px" }}>
+        <div className="rx-web" style={{ background:"#fff", borderRadius:16, border:"1px solid " + BRAND.border, padding:angosto ? "16px 14px" : "28px 30px", fontSize:angosto ? 14 : 15, lineHeight:1.4 }}>
+          <ReporteResumen rev={rev} taller={taller} previa={previa} historial={historial} seguimiento={d.orden} angosto={angosto} saludo web />
+          <details style={{ marginTop:18, borderTop:"1px solid " + BRAND.border, paddingTop:14 }}>
+            <summary style={{ fontWeight:800, cursor:"pointer", fontSize:"1.05em" }}>Ver el detalle de cada punto revisado</summary>
+            <div style={{ marginTop:12 }}><ReporteDetalle rev={rev} taller={taller} angosto={angosto} sinEncabezado /></div>
+          </details>
+        </div>
+        <div style={{ display:"flex", justifyContent:"center", margin:"16px 0 10px" }}>
+          <button type="button" onClick={() => setImprimir(true)} style={botonRev("claro")}>🖨 Guardar en PDF o imprimir</button>
+        </div>
+        <div style={{ textAlign:"center", fontSize:12, color:BRAND.muted, lineHeight:1.5 }}>
+          {rev.enlaceVence ? `Este enlace funciona hasta el ${fechaConAnio(rev.enlaceVence)}. ` : ""}¿Dudas? Comunícate con {taller.nombre}.
+          <div style={{ display:"flex", justifyContent:"center", alignItems:"center", gap:6, marginTop:10, opacity:0.75 }}><span>Hecho con</span><LogoRX alto={12} /></div>
+        </div>
+      </div>
+      {imprimir && (
+        <VistaImpresion titulo={`Revisión ${textoVehiculo(rev.vehiculo)} ${rev.fecha}`.trim()} onCerrar={() => setImprimir(false)}>
+          <HojasReporte rev={rev} taller={taller} previa={previa} historial={historial} />
+        </VistaImpresion>)}
+    </div>
+  );
+}
+
+// ─── Dashboard: revisiones del mes, órdenes sin revisión y búsqueda por vehículo ─
+function ResumenRevisionesDashboard({ revs, ordenes, taller, usuario, desktop, onAbrirRevision }) {
+  const S = mkS();
+  const [vista, setVista] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const formato = () => setVista({ tipo:"formato" });
+  const portal = vista && (
+    <VistaImpresion titulo={vista.tipo === "formato" ? "Formato de revisión de cortesía" : `Revisión ${vista.rev.ordenId || ""} ${textoVehiculo(vista.rev.vehiculo)}`.trim()} onCerrar={() => setVista(null)}>
+      {vista.tipo === "formato" ? <FormatoEnBlanco taller={taller} /> : <HojasReporte rev={vista.rev} taller={taller} previa={vista.previa} historial={vista.historial} />}
+    </VistaImpresion>);
+  const cabecera = (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:10 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:BRAND.accent }}>🔍 Revisiones de cortesía</div>
+      <button type="button" onClick={formato} style={{ ...botonRev("claro"), padding:"6px 11px", fontSize:12 }}>🖨 Formato para llenar a mano</button>
+    </div>);
+  if (revs.tabla === "sin_tabla") return (
+    <div style={S.card}>{cabecera}
+      <div style={{ fontSize:12, color:BRAND.muted, lineHeight:1.5 }}>{puedePerm(usuario, "todo") ? "Para guardarlas en la app falta un paso: ejecuta migracion_revisiones.sql en Supabase → SQL Editor. El formato para llenar a mano ya lo puedes imprimir." : "El administrador aún no termina de activarlas. El formato para llenar a mano ya lo puedes imprimir."}</div>
+      {portal}
+    </div>);
+  const estados = ordenes.map(o => ({ o, e: revs.estadoDeOrden(o) }));
+  const pendientes = ordenarPorAlta(estados.filter(x => x.e && x.e.tipo === "pendiente").map(x => x.o), "recientes");
+  const enCurso = estados.filter(x => x.e && x.e.tipo === "curso").map(x => x.o);
+  const mes = hoyLocal().slice(0, 7);
+  const delMes = revs.indice().filter(r => (r.fecha || "").slice(0, 7) === mes);
+  const suma = k => delMes.reduce((t, r) => t + (Number((r.resumen || {})[k]) || 0), 0);
+  const sug = suma("sug"), acep = suma("acep"), monto = suma("monto");
+  const buscar = async () => {
+    const k = claveVehiculo(busca);
+    if (k.length < 4) { setResultado({ aviso:"Escribe la placa completa o el VIN." }); return; }
+    const esVin = k.length >= 11;
+    setResultado({ cargando:true });
+    const lista = await revs.historialVehiculo(esVin ? "" : k, esVin ? k : "", true);
+    setResultado({ lista, texto: busca.trim() });
+  };
+  const ver = (lista, i) => setVista({ tipo:"reporte", rev: lista[i], previa: lista[i + 1] || null, historial: lista.slice(i + 1) });
+  const fila = (o, etiqueta) => (
+    <button key={o.id} type="button" onClick={() => onAbrirRevision(o)}
+      style={{ display:"flex", alignItems:"center", gap:8, width:"100%", background:"none", border:"none", borderBottom:"0.5px solid " + BRAND.border, padding:"7px 2px", cursor:"pointer", textAlign:"left", fontFamily:"inherit" }}>
+      <span style={{ fontSize:12, fontWeight:700, color:BRAND.accent, flexShrink:0 }}>{o.id}</span>
+      <span style={{ fontSize:12, color:BRAND.text, flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{o.cliente || "Sin nombre"} · {textoVehiculo(o.vehiculo)}</span>
+      <span style={{ fontSize:11, color:SEM.a.texto, fontWeight:700, flexShrink:0 }}>{etiqueta}</span>
+    </button>);
+  return (
+    <div style={S.card}>
+      {cabecera}
+      <div style={{ display:"grid", gridTemplateColumns:desktop ? "repeat(4, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))", gap:8, marginBottom:12 }}>
+        <TarjetaCifra icono="🔍" titulo="Revisiones del mes" valor={delMes.length} detalle={delMes.length ? (n => `${n} terminada${n === 1 ? "" : "s"}`)(delMes.filter(r => r.estado === "terminada").length) : "aún ninguna"} color={BRAND.accent} />
+        <TarjetaCifra icono="🛠" titulo="Servicios sugeridos" valor={sug} detalle={sug ? "de lo amarillo y lo rojo" : null} color={BRAND.blue} />
+        <TarjetaCifra icono="✓" titulo="Aceptados" valor={acep} detalle={sug ? `${Math.round(acep * 100 / sug)}% de lo sugerido` : null} color={BRAND.green} />
+        <TarjetaCifra icono="$" titulo="Autorizado este mes" valor={dinero(monto)} detalle={monto ? null : "anota precios al sugerir"} color={BRAND.purple} />
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:desktop ? "1fr 1fr" : "1fr", gap:14 }}>
+        <div>
+          <div style={{ fontSize:12, fontWeight:800, color:BRAND.text, marginBottom:4 }}>Órdenes sin revisión {pendientes.length > 0 && <span style={{ color:SEM.a.texto }}>({pendientes.length})</span>}</div>
+          {!pendientes.length && !enCurso.length
+            ? <div style={{ fontSize:12, color:BRAND.muted, padding:"6px 0" }}>Todas las órdenes nuevas tienen su revisión. Cada orden que crees te llevará directo a hacerla.</div>
+            : <>{pendientes.slice(0, 5).map(o => fila(o, "Hacer revisión →"))}{enCurso.slice(0, 3).map(o => fila(o, "Terminar →"))}
+                {pendientes.length > 5 && <div style={{ fontSize:11, color:BRAND.muted, paddingTop:5 }}>y {pendientes.length - 5} más</div>}</>}
+        </div>
+        <div>
+          <div style={{ fontSize:12, fontWeight:800, color:BRAND.text, marginBottom:6 }}>Estado e historial de un vehículo</div>
+          <div style={{ display:"flex", gap:6 }}>
+            <input value={busca} onChange={e => setBusca(e.target.value)} onKeyDown={e => { if (e.key === "Enter") buscar(); }} placeholder="Placa o VIN" aria-label="Placa o VIN del vehículo" style={{ ...entradaRev, flex:1, width:"auto" }} />
+            <button type="button" onClick={buscar} style={botonRev("suave")}>Buscar</button>
+          </div>
+          {resultado && resultado.aviso && <div style={{ fontSize:12, color:BRAND.muted, marginTop:6 }}>{resultado.aviso}</div>}
+          {resultado && resultado.cargando && <div style={{ fontSize:12, color:BRAND.muted, marginTop:6 }}>Buscando…</div>}
+          {resultado && resultado.lista && (!resultado.lista.length
+            ? <div style={{ fontSize:12, color:BRAND.muted, marginTop:6 }}>No hay revisiones de «{resultado.texto}» en tu taller.</div>
+            : (() => { const ult = resultado.lista[0], res = resumenRevision(ult.datos), t = titularRevision(res, false); return (
+              <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:6 }}>
+                <div style={{ display:"flex", gap:10, alignItems:"center", background:BRAND.bg, borderRadius:10, padding:"0.55rem 0.7rem" }}>
+                  <DiagramaVehiculo datos={ult.datos} ancho={54} etiquetas={false} />
+                  <div style={{ minWidth:0, flex:1 }}>
+                    <div style={{ fontSize:12.5, fontWeight:800 }}>{textoVehiculo(ult.vehiculo) || "Vehículo"} · {ult.placa}</div>
+                    <div style={{ fontSize:11.5, color:BRAND.muted }}>Última revisión: {fechaCortaAnio(ult.fecha)}{ult.km != null ? ` · ${ult.km.toLocaleString("es-MX")} km` : ""}</div>
+                    <div style={{ fontSize:12, fontWeight:800, color:t.sem ? SEM[t.sem].texto : BRAND.text, marginTop:2 }}>{t.texto}</div>
+                  </div>
+                </div>
+                {resultado.lista.map((r, i) => <FilaHistorialRev key={r.id} r={r} onVer={() => ver(resultado.lista, i)} />)}
+              </div>); })())}
+        </div>
+      </div>
+      {portal}
+    </div>
+  );
+}
+
+// En «Nueva orden»: si el vehículo ya vino, se avisa qué quedó pendiente para ofrecerlo
+function AvisoVehiculoConocido({ placa, serie, revs }) {
+  const pc = claveVehiculo(placa), sc = claveVehiculo(serie);
+  const p = pc.length >= 5 ? placa : "", v = sc.length === 17 ? serie : "";
+  useEffect(() => {
+    if (!p && !v) return;
+    const t = setTimeout(() => { revs.historialVehiculo(p, v).catch(() => {}); }, 600);
+    return () => clearTimeout(t);
+  }, [pc, sc]);
+  if ((!p && !v) || revs.tabla !== "lista") return null;
+  const lista = revs.vehiculoEnCache(p, v);
+  if (!lista || !lista.length) return null;
+  const ult = lista[0];
+  const pend = sugerenciasDe(ult.datos).filter(s => s.decision !== "aceptada" && s.decision !== "rechazada");
+  return (
+    <div style={{ gridColumn:"1 / -1", background:"#F2F6FF", border:"1px solid #C9D8FB", borderRadius:10, padding:"0.65rem 0.8rem" }}>
+      <div style={{ fontSize:12.5, fontWeight:800, color:"#1E3A8A" }}>🔁 Este vehículo ya vino al taller</div>
+      <div style={{ fontSize:12, color:BRAND.text, marginTop:3, lineHeight:1.45 }}>
+        Última revisión: {fechaCortaAnio(ult.fecha)}{ult.ordenId ? ` (${ult.ordenId})` : ""}{ult.km != null ? ` · ${ult.km.toLocaleString("es-MX")} km` : ""}.{" "}
+        {pend.length ? <>Quedó pendiente: <b>{pend.map(s => s.texto).join(", ")}</b>. Ofrécelo en esta visita.</> : "No quedaron servicios pendientes."}
+      </div>
+    </div>
+  );
+}
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
-export default function App() {
+function AppTaller() {
   const S = mkS();
   const desktop = useDesktop();
   const [usuario, setUsuario] = useState(null);
@@ -3720,6 +5707,7 @@ export default function App() {
   const [modalCobro,setModalCobro]=useState(null);
   const [modalPago,setModalPago]=useState(null);
   const [modalTerminar,setModalTerminar]=useState(null);
+  const [recienCreada,setRecienCreada]=useState("");   // orden recién creada: su pestaña Revisión abre con el recordatorio
   // CAMBIO 4: servicio ahora es array para multi-selección
   const [form,setForm]=useState({cliente:"",telefono:"",vehiculo:"",placa:"",serie:"",siniestro:"",color:"",servicio:[],tecnico:"",entrega:"",notas:"",costo:"",fotoPrincipal:null,llegada:"",transito:false});
 
@@ -3864,11 +5852,15 @@ export default function App() {
       enviadoRef.current[nuevo] = estable(base);
     }
     delete syncRef.current[viejo]; delete enviadoRef.current[viejo];
+    revs.alRenombrarOrden(viejo, nuevo);       // su revisión de cortesía la sigue
   };
 
   // Solo recarga todo si cambia la cuenta, el taller o el rol (no en cada renovación del token)
   // En modo pizarrón no se cargan las órdenes completas: la TV pide a la base solo lo que muestra
   const claveSesion = usuario && !usuario.modoDemo && !soloPizarron ? [usuario.id, usuario.taller, usuario.rol].join("|") : "";
+  // Revisiones de cortesía (también en el modo demostración; la pantalla de la TV no las usa)
+  const claveRev = usuario && !soloPizarron && ROLES_EQUIPO.includes(usuario.rol) ? (usuario.modoDemo ? "demo|" + usuario.id : claveSesion) : "";
+  const revs = useRevisiones(usuario, claveRev, { error: setErrorSync, info: setAvisoSync });
 
   useEffect(() => {
     if (!claveSesion) { cargadoRef.current = false; return; }
@@ -3976,6 +5968,8 @@ export default function App() {
     setOrdenSel(prev => prev && prev.id === id ? fn(prev) : prev);
   };
   const abrirOrdenInfo = o => { setOrdenSel(o); setTabDetalle("info"); setVista("ordenes"); setSubVista("activas"); };
+  const abrirOrdenRevision = o => { setOrdenSel(o); setTabDetalle("revision"); setVista("ordenes"); setSubVista("activas"); setGBusqueda(""); };
+  const tallerInfo = { nombre: usuario.tallerNombre || usuario.taller || "Mi taller", logo: usuario.logo || "" };
   const renderPizarron = () => (
     <SeccionPizarron key={pizFiltro.n} filtroInicial={pizFiltro.estado} ordenes={ordenes} usuario={usuario} desktop={desktop}
       puedeEditar={puedePerm(usuario, "editar_ordenes") || puedePerm(usuario, "ficha")} onFecha={cambiarFechaEntrega} onAbrirOrden={abrirOrdenInfo} />
@@ -4175,6 +6169,8 @@ export default function App() {
       bitacora: bitacoraInicial
     };
     setOrdenes(p => [n, ...p]);
+    // El asesor que recibe al cliente pasa directo a la revisión de cortesía
+    setOrdenSel(n); setTabDetalle("revision"); setRecienCreada(n.id);
     setForm({ cliente:"", telefono:"", vehiculo:"", placa:"", serie:"", siniestro:"",
       color:"", servicio:[], tecnico:"", entrega:"", notas:"", costo:"", fotoPrincipal:null, llegada:"", transito:false });
     setCamaraActiva(false);
@@ -4225,7 +6221,7 @@ export default function App() {
         </div>
         {lista.length===0
           ?<div style={{fontSize:12,color:BRAND.muted,textAlign:"center",padding:"1.25rem 0.5rem"}}>{vacio}</div>
-          :<div style={{display:"flex",flexDirection:"column",gap:10}}>{lista.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>abrir(o)} />)}</div>}
+          :<div style={{display:"flex",flexDirection:"column",gap:10}}>{lista.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>abrir(o)} rev={revs.estadoDeOrden(o)} onRevision={()=>abrirOrdenRevision(o)} />)}</div>}
       </div>
     );
     return(
@@ -4251,6 +6247,7 @@ export default function App() {
           <span style={{fontSize:12,color:c.texto,fontWeight:600,flexShrink:0}}>Ver pizarrón →</span>
         </div>); })()}
       <ResumenRefaccionesDashboard ordenes={ordenes} desktop={desktop} onIr={irARefacciones} />
+      <ResumenRevisionesDashboard revs={revs} ordenes={ordenes} taller={tallerInfo} usuario={usuario} desktop={desktop} onAbrirRevision={abrirOrdenRevision} />
       <div style={S.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
           <div style={{fontSize:13,fontWeight:700,color:BRAND.accent}}>Unidades del taller <span style={{fontSize:11,color:BRAND.muted,fontWeight:400}}>({activas.length} {activas.length===1?"orden activa":"órdenes activas"})</span></div>
@@ -4270,9 +6267,9 @@ export default function App() {
       {subVista==="activas"&&(
         <div>
           {!ordenSel&&<div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}><input style={{...S.input,width:180}} placeholder="Buscar en activas..." value={busqueda} onChange={e=>setBusqueda(e.target.value)} /><select style={{...S.select,width:155}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)}><option value="todos">Todos los estados</option>{ESTADOS.map(e=><option key={e.key} value={e.key}>{e.label}</option>)}</select>{selectorOrden}{puedePerm(usuario,"crear_ordenes")&&<button style={S.btn} onClick={()=>setVista("nueva")}>+ Nueva Orden</button>}</div>}
-          {ordenSel?<OrdenExpandida onRenombrado={alRenombrar} o={ordenSel} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} tabDetalle={tabDetalle} setTabDetalle={setTabDetalle} avanzarEstado={avanzarEstado} setModalRetroceder={setModalRetroceder} setModalCerrar={setModalCerrar} setModalCobro={setModalCobro} setModalTerminar={setModalTerminar} fotoRef={fotoRef} docRef={docRef} docTipo={docTipo} setDocTipo={setDocTipo} docNombre={docNombre} setDocNombre={setDocNombre} agregarFotos={agregarFotos} eliminarFoto={eliminarFoto} agregarDoc={agregarDoc} eliminarDoc={eliminarDoc} setFotoAmpliada={setFotoAmpliada} usuario={usuario} />:(
+          {ordenSel?<OrdenExpandida onRenombrado={alRenombrar} o={ordenSel} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} tabDetalle={tabDetalle} setTabDetalle={setTabDetalle} avanzarEstado={avanzarEstado} setModalRetroceder={setModalRetroceder} setModalCerrar={setModalCerrar} setModalCobro={setModalCobro} setModalTerminar={setModalTerminar} fotoRef={fotoRef} docRef={docRef} docTipo={docTipo} setDocTipo={setDocTipo} docNombre={docNombre} setDocNombre={setDocNombre} agregarFotos={agregarFotos} eliminarFoto={eliminarFoto} agregarDoc={agregarDoc} eliminarDoc={eliminarDoc} setFotoAmpliada={setFotoAmpliada} usuario={usuario} revs={revs} taller={tallerInfo} recienCreada={recienCreada} onBitacora={accion=>updOrden(ordenSel.id,{},{accion,usuario:usuario.nombre})} />:(
             <div>
-              <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(2,1fr)":"1fr",gap:10}}>{activasPagina.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>{setOrdenSel(o);setTabDetalle("info");}} />)}</div>
+              <div style={{display:"grid",gridTemplateColumns:desktop?"repeat(2,1fr)":"1fr",gap:10}}>{activasPagina.map(o=><TarjetaOrden key={o.id} o={o} ordenes={ordenes} setOrdenes={setOrdenes} setOrdenSel={setOrdenSel} onClick={()=>{setOrdenSel(o);setTabDetalle("info");}} rev={revs.estadoDeOrden(o)} onRevision={()=>{setOrdenSel(o);setTabDetalle("revision");}} />)}</div>
               {ordenesActivas.length===0&&<div style={{textAlign:"center",color:BRAND.muted,padding:"2rem",fontSize:13}}>No se encontraron órdenes</div>}
               {totalPaginas>1&&<div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:16}}><button style={{...S.btnSm(),opacity:paginaActual<=1?0.4:1}} disabled={paginaActual<=1} onClick={()=>setPagina(p=>Math.max(1,p-1))}>← Anterior</button><span style={{fontSize:12,color:BRAND.muted}}>Página {paginaActual} de {totalPaginas}</span><button style={{...S.btnSm(),opacity:paginaActual>=totalPaginas?0.4:1}} disabled={paginaActual>=totalPaginas} onClick={()=>setPagina(p=>Math.min(totalPaginas,p+1))}>Siguiente →</button></div>}
             </div>
@@ -4355,6 +6352,7 @@ export default function App() {
           <div><label style={S.label}>Teléfono</label><input style={{...S.input,...be("telefono")}} placeholder="55 0000 0000" value={form.telefono} onChange={e=>setForm({...form,telefono:e.target.value})} /><Er f="telefono" /></div>
           <div><label style={S.label}>Vehículo *</label><input style={{...S.input,...be("vehiculo")}} placeholder="Marca, Modelo, Año" value={form.vehiculo} onChange={e=>setForm({...form,vehiculo:e.target.value})} /><Er f="vehiculo" /></div>
           <div><label style={S.label}>Placa *</label><input style={{...S.input,...be("placa")}} placeholder="ABC-000" value={form.placa} onChange={e=>setForm({...form,placa:e.target.value})} /><Er f="placa" /></div>
+          <AvisoVehiculoConocido placa={form.placa} serie={form.serie} revs={revs} />
           <div style={{gridColumn:"1/-1"}}>
             <label style={S.label}>¿Cómo llegó la unidad?</label>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -4554,4 +6552,12 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+// ─── Punto de entrada ─────────────────────────────────────────────────────────
+// Con ?reporte=… se abre la página del reporte para el cliente (sin sesión); si no, la app del taller.
+export default function App() {
+  const [clave] = useState(claveReporteEnUrl);
+  if (clave) return <ReportePublico clave={clave} />;
+  return <AppTaller />;
 }
